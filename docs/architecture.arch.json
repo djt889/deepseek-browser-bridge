@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "DeepSeek Browser Bridge 架构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "request-path", "label": "主请求链路", "focus": ["agents", "pipeline", "chrome", "inject", "deepseek"], "note": "请求从本地 agent 经桥接流水线由真实 Chrome 页面内发出，TLS/Cookie/数美信号全真。" },
+      { "id": "safety", "label": "保号与鉴权", "focus": ["auth", "pipeline", "state"], "note": "API Key 鉴权、节流闸门与会话复用都在桥内完成，不产生多余请求。" },
+      { "id": "ops", "label": "运维面板", "focus": ["dashboard", "pipeline", "state"], "note": "Dashboard 提供号池健康、日志、会话清扫与多 Key 管理。" }
+    ]
+  },
+  "components": [
+    { "id": "agents", "type": "external", "label": "本地 Agent / SDK", "sublabel": "OpenAI 兼容客户端", "pos": [40, 300], "size": [160, 72] },
+    { "id": "dashboard", "type": "frontend", "label": "Dashboard 面板", "sublabel": ":39751/admin", "pos": [40, 520], "size": [160, 72] },
+    { "id": "auth", "type": "security", "label": "auth.json", "sublabel": "多 API Key · 面板密码", "pos": [270, 520], "size": [150, 72], "tag": "本地文件" },
+    { "id": "pipeline", "type": "backend", "label": "server.mjs 流水线", "sublabel": "127.0.0.1:39751 · Node ≥22 零依赖", "pos": [270, 296], "size": [190, 84], "tag": "三协议适配 · 节流 · 号池轮换" },
+    { "id": "state", "type": "database", "label": "本地状态文件", "sublabel": "sessions / files / stats.json", "pos": [530, 520], "size": [160, 72] },
+    { "id": "chrome", "type": "frontend", "label": "真实 Chrome 实例", "sublabel": "headed 屏幕外 · 每号一个 profile", "pos": [530, 296], "size": [190, 84], "tag": "CDP :9222+" },
+    { "id": "inject", "type": "backend", "label": "inject.js（页面内）", "sublabel": "PoW WASM · SSE 解析", "pos": [790, 296], "size": [180, 84], "tag": "页面自身 fetch 发请求" },
+    { "id": "deepseek", "type": "external", "label": "DeepSeek 网页版", "sublabel": "chat.deepseek.com", "pos": [1040, 300], "size": [160, 72] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "本机 127.0.0.1", "wraps": ["pipeline", "state", "auth", "chrome", "inject"] },
+    { "kind": "security-group", "label": "Chrome 页面上下文", "wraps": ["inject"] }
+  ],
+  "connections": [
+    { "id": "agents-to-pipeline", "from": "agents", "to": "pipeline", "label": "POST /v1/*（流式/非流式）", "variant": "emphasis", "labelAt": [180, 266] },
+    { "id": "dashboard-to-pipeline", "from": "dashboard", "to": "pipeline", "label": "admin API", "variant": "dashed", "fromSide": "top", "toSide": "left" },
+    { "id": "auth-to-pipeline", "from": "auth", "to": "pipeline", "label": "鉴权", "fromSide": "top", "toSide": "bottom" },
+    { "id": "pipeline-to-state", "from": "pipeline", "to": "state", "label": "会话映射 / 统计 / 文件缓存" },
+    { "id": "pipeline-to-chrome", "from": "pipeline", "to": "chrome", "label": "CDP 注入 / 命令派发", "variant": "emphasis", "labelDy": -36 },
+    { "id": "inject-to-deepseek", "from": "inject", "to": "deepseek", "label": "真实 TLS · HttpOnly Cookie · 数美 SDK", "variant": "emphasis", "labelDy": 66 }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "请求链路", "items": ["OpenAI / Anthropic / Responses 三协议共用一条流水线", "前缀哈希命中会话复用，只发增量消息"] },
+    { "dot": "emerald", "title": "保号设计", "items": ["请求全部由真实 Chrome 页面内发出，指纹全真", "间隔 + 随机抖动 + 每小时/每日限额闸门", "多号空闲轮换，单号失败自动摘除换号"] },
+    { "dot": "rose", "title": "稳定性", "items": ["PoW 挑战官方 WASM 本地求解", "附件上传审计轮询 + 内容哈希缓存", "网页会话 10 天未活跃自动回收（成功才删映射）"] }
+  ]
+}

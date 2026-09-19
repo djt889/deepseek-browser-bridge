@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DeepSeek Browser Bridge · Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; --bg:#0b0e14; --panel:#11151c; --panel2:#161b22; --line:#232a33; --line2:#2d3540; --txt:#d7dde5; --dim:#7d8894; --acc:#4c8dff; --ok:#3fb950; --warn:#d9a62e; --bad:#f85149; }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--txt); font: 14px/1.55 "Segoe UI", system-ui, sans-serif; display: flex; min-height: 100vh; }
+
+  /* ---------- sidebar ---------- */
+  #side { width: 208px; flex: none; background: #080a0f; border-right: 1px solid var(--line); padding: 18px 12px; display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh; }
+  #side .logo { font-size: 15px; font-weight: 600; color: #e8edf4; letter-spacing: .3px; padding: 2px 10px 0; }
+  #side .logo small { display: block; font-size: 11px; font-weight: 400; color: var(--dim); margin-top: 2px; }
+  #side nav { margin-top: 22px; display: flex; flex-direction: column; gap: 2px; }
+  #side nav a { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--dim); text-decoration: none; font-size: 13.5px; cursor: pointer; border-left: 2px solid transparent; }
+  #side nav a:hover { background: #12161d; color: var(--txt); }
+  #side nav a.on { background: #141a23; color: #fff; border-left-color: var(--acc); }
+  #side nav a .ic { width: 17px; text-align: center; opacity: .85; }
+  #side .foot { margin-top: auto; font-size: 11.5px; color: var(--dim); padding: 0 10px; }
+  #side .foot .live { color: var(--ok); }
+  #side .foot a { color: var(--dim); cursor: pointer; }
+  #side .foot a:hover { color: var(--txt); }
+
+  /* ---------- main ---------- */
+  #main { flex: 1; min-width: 0; padding: 0 26px 40px; }
+  #topbar { display: flex; align-items: center; gap: 14px; padding: 16px 2px 14px; border-bottom: 1px solid var(--line); margin-bottom: 20px; position: sticky; top: 0; background: var(--bg); z-index: 5; }
+  #topbar h1 { font-size: 17px; font-weight: 600; color: #e8edf4; }
+  #topbar .sub { font-size: 12px; color: var(--dim); }
+  #topbar .sp { margin-left: auto; display: flex; gap: 8px; }
+
+  .view { display: none; max-width: 1180px; }
+  .view.on { display: block; }
+  h3.sec { font-size: 12.5px; color: var(--dim); text-transform: uppercase; letter-spacing: 1.2px; margin: 20px 0 10px; font-weight: 600; }
+  h3.sec:first-child { margin-top: 0; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 10px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; }
+  .card .v { font-size: 20px; font-weight: 600; color: #e8edf4; }
+  .card .k { font-size: 11.5px; color: var(--dim); margin-top: 1px; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  th, td { padding: 7px 11px; text-align: left; border-bottom: 1px solid #1a2028; font-size: 13px; }
+  th { background: #141a22; color: var(--dim); font-weight: 600; font-size: 12px; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #141a22; }
+  .pill { display: inline-block; padding: 1px 9px; border-radius: 20px; font-size: 11.5px; }
+  .pill.g { background: #10321d; color: var(--ok); } .pill.y { background: #382c0d; color: var(--warn); } .pill.r { background: #3a1215; color: var(--bad); } .pill.n { background: #1c232b; color: var(--dim); }
+
+  button { background: #1a2129; color: var(--txt); border: 1px solid var(--line2); border-radius: 7px; padding: 5px 13px; cursor: pointer; font-size: 12.5px; }
+  button:hover { background: #232b35; border-color: #465061; }
+  input { background: #0d1117; color: #e8edf4; border: 1px solid var(--line2); border-radius: 7px; padding: 6px 10px; font-size: 13px; }
+  input:focus { outline: none; border-color: var(--acc); }
+  .row { display: flex; gap: 10px; align-items: center; margin: 0 0 12px; flex-wrap: wrap; }
+  .kv { color: var(--dim); font-size: 12.5px; }
+  .err { color: var(--bad); }
+
+  .acct-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(272px, 1fr)); gap: 12px; }
+  .alert { background: #2a1a10; border: 1px solid #5a3a1a; border-left: 3px solid var(--warn); color: #e8c88a; border-radius: 8px; padding: 9px 13px; font-size: 13px; margin-bottom: 10px; }
+  .acct .hint { background: #171208; border: 1px solid #3d2e0d; color: #d9b86a; border-radius: 6px; padding: 6px 10px; font-size: 12px; margin-top: 8px; }
+  .acct { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 13px 15px; }
+  .acct .name { font-weight: 600; color: #e8edf4; display: flex; align-items: center; gap: 8px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
+  .acct dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 12px; color: var(--dim); margin: 9px 0 0; }
+  .acct dd { color: var(--txt); }
+
+  .logbox { background: #05070b; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; height: calc(100vh - 240px); min-height: 300px; overflow-y: auto; font: 12px/1.65 Consolas, "Cascadia Mono", monospace; white-space: pre-wrap; color: #9fb0c0; }
+  #sessBox { max-height: 46vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; }
+  #sessBox table { border: none; border-radius: 0; }
+  .cfg { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 8px; font-size: 12.5px; }
+  .cfg div { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; overflow-wrap: anywhere; }
+  .cfg b { color: var(--acc); font-weight: 500; }
+
+  /* ---------- login ---------- */
+  #login { max-width: 380px; margin: 14vh auto; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 34px; align-self: flex-start; width: 100%; }
+  #login h1 { font-size: 19px; color: #e8edf4; }
+  #login .sub { color: var(--dim); font-size: 12.5px; margin: 8px 0 18px; }
+  #login input { width: 100%; margin: 0 0 14px; padding: 9px 11px; }
+  #login button { width: 100%; padding: 9px; background: var(--acc); border-color: var(--acc); color: #fff; font-weight: 600; }
+  #login button:hover { background: #5d9aff; }
+  #msg { color: var(--bad); font-size: 12px; min-height: 16px; }
+</style>
+</head>
+<body>
+
+<div id="login" style="display:none">
+  <h1>DQBridge</h1>
+  <div class="sub">DeepSeek 网页桥接控制台 · 输入 Dashboard 密码（初始值见 auth.json 或桥首启日志）</div>
+  <input id="pwd" type="password" placeholder="dashboard password" onkeydown="if(event.key==='Enter')doLogin()">
+  <button onclick="doLogin()">进入控制台</button>
+  <div id="msg"></div>
+</div>
+
+<div id="side" style="display:none">
+  <div class="logo">DQBridge<small>DeepSeek Browser Bridge</small></div>
+  <nav>
+    <a data-v="ov" class="on"><span class="ic">◉</span>概览</a>
+    <a data-v="req"><span class="ic">☰</span>请求记录</a>
+    <a data-v="stat"><span class="ic">▦</span>统计</a>
+    <a data-v="log"><span class="ic">≡</span>实时日志</a>
+    <a data-v="sess"><span class="ic">❐</span>会话清扫</a>
+    <a data-v="keys"><span class="ic">🔑</span>API Keys</a>
+    <a data-v="set"><span class="ic">⚙</span>设置</a>
+  </nav>
+  <div class="foot">
+    <span class="live">●</span> <span id="ftPort">127.0.0.1:39751</span><br>
+    自动刷新 5s · <a onclick="logout()">退出</a>
+  </div>
+</div>
+
+<div id="main" style="display:none">
+  <div id="topbar">
+    <h1 id="vTitle">概览</h1>
+    <span class="sub" id="vSub"></span>
+    <div class="sp"><button onclick="refresh(true)">手动刷新</button><button onclick="togglePause()" id="pauseBtn">暂停轮询</button></div>
+  </div>
+
+  <div class="view on" data-v="ov">
+    <div class="cards" id="topCards"></div>
+    <h3 class="sec">号池</h3>
+    <div id="alerts"></div>
+    <div class="row"><button onclick="doFlush()">清空会话映射</button><button onclick="doFlush(true)">清空映射并删网页会话</button><span id="opMsg" class="kv"></span></div>
+    <div class="acct-grid" id="accts"></div>
+  </div>
+
+  <div class="view" data-v="req">
+    <table><thead><tr><th>时间</th><th>账号</th><th>模式</th><th>输入</th><th>输出</th><th>思考</th><th>工具</th><th>耗时</th><th>结果</th></tr></thead><tbody id="reqRows"></tbody></table>
+  </div>
+
+  <div class="view" data-v="stat">
+    <table><thead><tr><th>日期</th><th>请求</th><th>成功</th><th>失败</th><th>输入字符</th><th>输出字符</th></tr></thead><tbody id="dayRows"></tbody></table>
+  </div>
+
+  <div class="view" data-v="log">
+    <div class="logbox" id="logs"></div>
+  </div>
+
+  <div class="view" data-v="sess">
+    <div class="row"><button onclick="loadSessions()">加载网页会话列表</button><button onclick="purgeSelected()">删除选中</button><span id="purgeMsg" class="kv"></span></div>
+    <div id="sessBox"></div>
+    <div class="kv" style="margin-top:8px">删除走网页接口、确认成功才落账；仅操作本控制台加载出的会话。</div>
+  </div>
+
+  <div class="view" data-v="keys">
+    <div class="row"><input id="newKeyInput" placeholder="sk-xxxx（字母/数字/-/_）" style="width:330px"><button onclick="addKey()">添加 Key</button><span id="keysMsg" class="kv"></span></div>
+    <div id="keysBox"></div>
+    <div class="kv" style="margin-top:8px">Key 用于 /v1/* 鉴权（Authorization: Bearer 或 x-api-key）。CCR 的 dq provider api_key 填其中任意一个。至少保留 1 个。</div>
+  </div>
+
+  <div class="view" data-v="set">
+    <h3 class="sec">Dashboard 密码</h3>
+    <div class="row">
+      <input id="newPwd" placeholder="新 Dashboard 密码" style="width:210px">
+      <button onclick="setPwd()">改密码</button>
+      <span id="opMsg2" class="kv"></span>
+    </div>
+    <h3 class="sec">配置一览（只读）</h3>
+    <div class="cfg" id="cfgBox"></div>
+  </div>
+</div>
+
+<script>
+let paused = false, authed = false;
+const TITLES = { ov: ['概览', '运行状态与号池'], req: ['请求记录', '最近 50 条'], stat: ['统计', '按日聚合 · 保留 15 天'], log: ['实时日志', '环形 200 行'], sess: ['会话清扫', '网页会话列表与批量删除'], keys: ['API Keys', '多 Key 管理 · /v1/* 鉴权'], set: ['设置', '凭据与运行配置'] };
+
+async function jpost(url, body) {
+  const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) });
+  return { status: r.status, data: await r.json().catch(() => ({})) };
+}
+async function jget(url) {
+  const r = await fetch(url);
+  if (r.status === 401) { showLogin(); throw new Error('unauthorized'); }
+  return r.json();
+}
+
+function switchView(v) {
+  document.querySelectorAll('#side nav a').forEach((a) => a.classList.toggle('on', a.dataset.v === v));
+  document.querySelectorAll('.view').forEach((el) => el.classList.toggle('on', el.dataset.v === v));
+  document.getElementById('vTitle').textContent = TITLES[v][0];
+  document.getElementById('vSub').textContent = TITLES[v][1];
+  if (v === 'keys') loadKeys();
+}
+document.querySelectorAll('#side nav a').forEach((a) => a.addEventListener('click', () => switchView(a.dataset.v)));
+
+async function doLogin() {
+  const { status } = await jpost('/admin/auth/login', { password: document.getElementById('pwd').value });
+  if (status === 200) { authed = true; document.getElementById('login').style.display = 'none'; document.getElementById('side').style.display = ''; document.getElementById('main').style.display = ''; refresh(true); }
+  else document.getElementById('msg').textContent = '密码错误';
+}
+async function logout() { await jpost('/admin/auth/logout'); location.reload(); }
+async function doFlush(withWeb) {
+  const r = await jpost('/admin/flush-sessions', withWeb ? { deleteWeb: true } : {});
+  const w = r.data?.webDeleted != null ? `，网页会话删除 ${r.data.webDeleted} 个${r.data.webFailed ? `（失败保留 ${r.data.webFailed}）` : ''}` : '';
+  document.getElementById('opMsg').textContent = '会话映射已清空' + w; refresh(true);
+}
+async function setPwd() { const r = await jpost('/admin/auth/set', { dashboardPassword: document.getElementById('newPwd').value }); document.getElementById('opMsg2').textContent = r.status === 200 ? '密码已更新' : '失败'; }
+async function loadKeys() {
+  try {
+    const r = await jget('/admin/keys');
+    document.getElementById('keysBox').innerHTML = `<table><thead><tr><th>Key</th><th style="width:90px">操作</th></tr></thead><tbody>${
+      (r.keys || []).map((k) => `<tr><td style="font-family:Consolas,'Cascadia Mono',monospace">${esc(k)}</td><td><button onclick="removeKey('${esc(k)}')">删除</button></td></tr>`).join('')
+    }</tbody></table>`;
+  } catch (e) { document.getElementById('keysMsg').textContent = '加载失败: ' + e.message; }
+}
+async function addKey() {
+  const v = document.getElementById('newKeyInput').value.trim();
+  const msg = document.getElementById('keysMsg');
+  if (!v) { msg.textContent = '请输入 Key'; return; }
+  const r = await jpost('/admin/keys/add', { key: v });
+  msg.textContent = r.data?.ok ? '已添加' : (r.data?.error?.message || r.data?.error || '失败');
+  if (r.data?.ok) { document.getElementById('newKeyInput').value = ''; loadKeys(); }
+}
+async function removeKey(k) {
+  if (!confirm(`删除 ${k.slice(0, 10)}… ？使用该 Key 的客户端将立即 401。`)) return;
+  const r = await jpost('/admin/keys/remove', { key: k });
+  const msg = document.getElementById('keysMsg');
+  msg.textContent = r.data?.ok ? '已删除' : (r.data?.error?.message || r.data?.error || '失败');
+  if (r.data?.ok) loadKeys();
+}
+function togglePause() { paused = !paused; document.getElementById('pauseBtn').textContent = paused ? '继续轮询' : '暂停轮询'; }
+
+let sessionCache = [];
+async function loadSessions() {
+  const msg = document.getElementById('purgeMsg');
+  msg.textContent = '加载中…';
+  try {
+    const r = await jget('/admin/sessions');
+    sessionCache = r.sessions || [];
+    msg.textContent = `共 ${sessionCache.length} 个（账号 ${r.account}）`;
+    document.getElementById('sessBox').innerHTML = `<table><thead><tr><th></th><th>标题</th><th>更新时间</th><th>状态</th></tr></thead><tbody>${
+      sessionCache.map((x) => `<tr>
+        <td><input type="checkbox" class="sessCk" value="${esc(x.id)}"></td>
+        <td>${esc(x.title) || '<span class="kv">(无标题)</span>'}</td>
+        <td class="kv">${x.ut ? new Date(x.ut * 1000).toLocaleString() : '-'}</td>
+        <td>${x.mapped ? '<span class="pill g">映射中</span> ' : ''}${x.queued ? '<span class="pill y">待回收</span>' : ''}</td></tr>`).join('')
+    }</tbody></table>`;
+  } catch (e) { msg.textContent = '加载失败: ' + e.message; }
+}
+async function purgeSelected() {
+  const ids = [...document.querySelectorAll('.sessCk:checked')].map((c) => c.value);
+  const msg = document.getElementById('purgeMsg');
+  if (!ids.length) { msg.textContent = '未勾选任何会话'; return; }
+  if (!confirm(`确认删除选中的 ${ids.length} 个网页会话？此操作不可恢复。`)) return;
+  msg.textContent = '删除中…';
+  const r = await jpost('/admin/sessions/purge', { ids });
+  msg.textContent = r.data?.ok ? `已删除 ${r.data.deleted} 个${r.data.remaining ? `，失败保留 ${r.data.remaining}` : ''}` : `失败: ${r.data?.error || r.status}`;
+  if (r.data?.deleted) loadSessions();
+}
+
+function esc(s) { return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+function fmtDur(s) { const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return h ? `${h}h${m}m` : `${m}m${s % 60}s`; }
+
+async function refresh(force) {
+  if (paused && !force) return;
+  let s;
+  try { s = await jget('/admin/stats'); } catch { return; }
+  authed = true;
+  const accs = s.accounts || [];
+  const alive = accs.filter((a) => a.loggedIn && !a.dead).length;
+  const cooling = accs.filter((a) => a.cooling).length;
+  const dead = accs.filter((a) => a.dead).length;
+  const ok = s.today?.ok ?? 0, fail = s.today?.fail ?? 0;
+  document.getElementById('topCards').innerHTML = [
+    ['运行时长', fmtDur(s.uptimeS || 0)],
+    ['账号', `<span class="${alive ? 'ok' : 'bad'}">${alive}</span><span class="kv">/${accs.length}</span>`],
+    ['冷却中', cooling ? `<span class="warn">${cooling}</span>` : '<span class="kv">0</span>'],
+    ['已摘除', dead ? `<span class="bad">${dead}</span>` : '<span class="kv">0</span>'],
+    ['今日请求', s.today?.requests ?? 0],
+    ['成功/失败', `<span class="ok">${ok}</span> <span class="${fail ? 'bad' : 'kv'}">${fail}</span>`],
+    ['队列', `${s.queue?.len ?? 0}/${s.queue?.concurrency ?? '-'}`],
+    ['会话映射', s.sessionsMapped ?? 0],
+    ['回收队列', s.retireQueue ? `<span class="warn">${s.retireQueue}</span>` : '<span class="kv">0</span>'],
+  ].map(([k, v]) => `<div class="card"><div class="v">${v}</div><div class="k">${k}</div></div>`).join('');
+
+  document.getElementById('accts').innerHTML = accs.map((a) => {
+    const st = a.dead ? (a.loggedIn ? '<span class="pill y">恢复中</span>' : '<span class="pill r">已摘除</span>')
+      : a.cooling ? `<span class="pill y">冷却 ${a.coolRemainS}s</span>`
+      : a.loggedIn ? '<span class="pill g">正常</span>' : '<span class="pill n">未登录</span>';
+    const dot = a.dead ? 'bad' : a.loggedIn ? 'ok' : 'warn';
+    const title = esc(a.displayName || a.name);
+    const hint = (!a.loggedIn || a.dead)
+      ? `<div class="hint">⚠ 请在该号的浏览器窗口重新登录，登录后自动恢复参与调度${a.dead && a.loggedIn ? '（检测到登录态，下次检查自动复活）' : ''}</div>` : '';
+    return `<div class="acct"><div class="name"><span class="dot ${dot}"></span>${title} <span class="kv">:${a.cdpPort}</span> ${st}</div>${hint}
+      <dl><dt>页面</dt><dd>${esc((a.page || a.error || '').slice(0, 40))}</dd>
+      <dt>今日请求</dt><dd>${a.dayCount ?? 0}</dd>
+      <dt>上次使用</dt><dd>${a.lastDone ? new Date(a.lastDone).toLocaleTimeString() : '-'}</dd>
+      <dt>会话映射</dt><dd>${(s.accStats || []).find((x) => x.name === a.name)?.sessions ?? 0}</dd></dl></div>`;
+  }).join('');
+
+  const trouble = accs.filter((a) => !a.loggedIn || a.dead);
+  document.getElementById('alerts').innerHTML = trouble.length
+    ? trouble.map((a) => `<div class="alert"><b>${esc(a.displayName || a.name)}</b>：${a.dead ? '已因连续鉴权失败被摘除' : '未登录'} —— 在该号的浏览器窗口重新登录即可自动恢复${a.dead ? '（无需手动复活）' : ''}；若反复出现，账号可能被风控限制，建议降频观察或换号。</div>`).join('')
+    : '';
+
+  const nameOf = (n) => (accs.find((x) => x.name === n) || {}).displayName || n;
+  document.getElementById('reqRows').innerHTML = (s.recent || []).map((r) => `<tr>
+    <td class="kv">${esc(r.at)}</td><td>${esc(nameOf(r.account))}</td>
+    <td><span class="pill ${r.mode === 'delta' ? 'g' : 'n'}">${esc(r.mode)}</span></td>
+    <td>${r.in}</td><td>${r.out}</td><td>${r.think || '-'}</td><td>${r.tools || '-'}</td>
+    <td>${r.ms != null ? (r.ms / 1000).toFixed(1) + 's' : '-'}</td>
+    <td>${r.ok ? '<span class="ok">✓</span>' : `<span class="err" title="${esc(r.err)}">✗ ${esc((r.err || '').split(' ')[0])}</span>`}</td></tr>`).join('') || '<tr><td colspan="9" class="kv">暂无请求</td></tr>';
+
+  document.getElementById('dayRows').innerHTML = Object.entries(s.days || {}).sort().reverse().map(([k, d]) =>
+    `<tr><td>${esc(k)}</td><td>${d.requests}</td><td class="ok">${d.ok}</td><td class="${d.fail ? 'bad' : 'kv'}">${d.fail}</td><td>${d.inChars}</td><td>${d.outChars}</td></tr>`).join('') || '<tr><td colspan="6" class="kv">暂无</td></tr>';
+
+  document.getElementById('cfgBox').innerHTML = Object.entries(s.cfg || {}).map(([k, v]) =>
+    `<div><b>${esc(k)}</b> = ${esc(JSON.stringify(v))}</div>`).join('') +
+    `<div><b>API Keys</b> = ${(s.keys || []).map((k) => esc(k.slice(0, 12)) + '…').join(', ')}</div>`;
+
+  try {
+    const l = await jget('/admin/logs?n=60');
+    const box = document.getElementById('logs');
+    const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+    box.textContent = (l.logs || []).join('\n');
+    if (stick) box.scrollTop = box.scrollHeight;
+  } catch {}
+}
+
+async function boot() {
+  try {
+    const s = await jget('/admin/stats');
+    authed = true;
+    document.getElementById('side').style.display = '';
+    document.getElementById('main').style.display = '';
+    document.getElementById('ftPort').textContent = '127.0.0.1:' + (location.port || '39751');
+    refresh(true);
+  } catch { showLogin(); }
+}
+function showLogin() { authed = false; document.getElementById('login').style.display = ''; document.getElementById('side').style.display = 'none'; document.getElementById('main').style.display = 'none'; }
+setInterval(() => { if (authed && !paused) refresh(false); }, 5000);
+boot();
+</script>
+</body>
+</html>

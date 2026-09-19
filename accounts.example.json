@@ -1,0 +1,4 @@
+[
+  { "name": "acc1", "cdpPort": 9222 },
+  { "name": "acc2", "cdpPort": 9223 }
+]
