@@ -32,7 +32,6 @@ const ENV = (name, dflt) => {
 };
 const CFG = {
   port: Number(ENV('DQ_PORT', 39751)),
-  key: ENV('DQ_KEY', ''),
   concurrency: Math.max(1, Number(ENV('DQ_CONCURRENCY', 6))),
   queueMax: Math.max(1, Number(ENV('DQ_QUEUE_MAX', 32))),
   minGapMs: Math.max(0, Number(ENV('DQ_MIN_GAP_MS', 8000))),
@@ -46,6 +45,11 @@ const CFG = {
   // stream that still slips through is retried once automatically.
   sessionContGapMs: Number(ENV('DQ_SESSION_CONT_GAP_MS', 15000)),
   idleTimeoutMs: Number(ENV('DQ_IDLE_TIMEOUT_MS', 180000)),
+  // Page accepted the request (message id arrived) but generation never
+  // starts => official soft rate limit. Fail fast with DQ_SOFT_THROTTLED
+  // instead of hanging until the idle timeout. Very long prompts being
+  // preprocessed can also be silent this long — raise the env if so.
+  softThrottleMs: Number(ENV('DQ_SOFT_THROTTLE_MS', 60000)),
   sessionTtlMs: Number(ENV('DQ_SESSION_TTL_MS', 2 * 3600_000)),
   sessionMax: Number(ENV('DQ_SESSION_MAX', 50)),
   quietHours: ENV('DQ_QUIET_HOURS', ''), // 'HH:MM-HH:MM'
@@ -394,7 +398,7 @@ async function uploadAttachmentToPage(account, att) {
       retryable = info?.retryable !== false;
     }
     if (audit === 'pass' || audit === 'unknown') { // unknown past deadline: try it anyway
-      fileCache.set(cacheKey, { id: f.id, at: Date.now() });
+      fileCache.set(cacheKey, { id: f.id, at: Date.now(), name, bytes: Buffer.from(b64, 'base64').length });
       while (fileCache.size > 200) {
         const oldest = [...fileCache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
         fileCache.delete(oldest[0]);
@@ -526,15 +530,16 @@ function loadSessions() {
   } catch { /* first run or corrupt file */ }
 }
 let saveTimer = null;
+function writeSessionsSync() {
+  const out = {};
+  for (const [account, store] of sessions) {
+    if (store.size) out[account] = Object.fromEntries(store);
+  }
+  try { fs.writeFileSync(SESSIONS_FILE, JSON.stringify(out)); } catch { /* read-only fs, ignore */ }
+}
 function saveSessions() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    const out = {};
-    for (const [account, store] of sessions) {
-      if (store.size) out[account] = Object.fromEntries(store);
-    }
-    try { fs.writeFileSync(SESSIONS_FILE, JSON.stringify(out)); } catch { /* read-only fs, ignore */ }
-  }, 500);
+  saveTimer = setTimeout(writeSessionsSync, 500);
 }
 
 // Uploaded-file id cache: sha256(content) -> file id. Agent loops re-send the
@@ -957,6 +962,7 @@ function failJob(job, error) {
   if (job.cmdId) activeCmds.delete(job.cmdId);
   clearTimeout(job.watchdog);
   clearTimeout(job.graceStopFallback);
+  clearTimeout(job.softTimer); job.softTimer = null;
   throttles.get(job.account)?.done(false, job.error);
   if (job.startedAt) recordRequest(job);
   log(`fail [${job.account ?? '?'}] sess=${String(job.sessionId ?? '').slice(0, 8)} ${job.error}`);
@@ -996,16 +1002,27 @@ function sendComplete(job) {
       if (ev.type === 'meta') {
         if (Number.isInteger(ev.messageId)) job.responseMessageId = ev.messageId;
         if (Number.isInteger(ev.requestId)) job.requestMessageId = ev.requestId;
+        if (!job.firstDeltaAt && !job.softTimer) {
+          job.softTimer = setTimeout(() => {
+            job.softTimer = null;
+            if (!job.firstDeltaAt && !job.finished) failJob(job, 'DQ_SOFT_THROTTLED — accepted but no generation (official soft rate limit? pause requests)');
+          }, CFG.softThrottleMs);
+        }
       } else if (ev.type === 'start') {
         if (job.stream) emitDelta(job, 'start');
       } else if (ev.type === 'chunk') {
+        job.firstDeltaAt = job.firstDeltaAt || Date.now();
+        clearTimeout(job.softTimer); job.softTimer = null;
         job.text += ev.text;
         const shown = job.toolFilter ? job.toolFilter.push(ev.text) : ev.text;
         if (job.stream && shown) emitDelta(job, 'text', shown);
       } else if (ev.type === 'reasoning') {
+        job.firstDeltaAt = job.firstDeltaAt || Date.now();
+        clearTimeout(job.softTimer); job.softTimer = null;
         job.reasoning += ev.text;
         if (job.stream) emitDelta(job, 'reasoning', ev.text);
       } else if (ev.type === 'done') {
+        clearTimeout(job.softTimer); job.softTimer = null;
         cleanupRound();
         job.text = ev.text || job.text;
         job.reasoning = ev.reasoning || job.reasoning;
@@ -1059,6 +1076,7 @@ function sendComplete(job) {
       if (job.attachments?.length) {
         try {
           for (const att of job.attachments.slice(0, 4)) {
+            if (att.refId) { job.refFileIds.push(att.refId); continue; } // pre-uploaded via /v1/files
             const up = await uploadAttachmentToPage(job.account, att);
             job.refFileIds.push(up.id);
             if (att.kind === 'image') job.vision = true;
@@ -1451,6 +1469,55 @@ function readBody(req, limit) {
     req.on('error', reject);
   });
 }
+// Binary-safe body reader (multipart uploads).
+function readBodyRaw(req, limit) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > limit) { reject(new Error('DQ_PAYLOAD_TOO_LARGE')); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+// Minimal multipart/form-data parser: returns [{name, filename, mime, data}].
+function parseMultipart(buf, contentType) {
+  const m = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(String(contentType || ''));
+  if (!m) return [];
+  const bBuf = Buffer.from(`--${(m[1] || m[2]).trim()}`);
+  const out = [];
+  let pos = buf.indexOf(bBuf);
+  while (pos !== -1) {
+    const next = buf.indexOf(bBuf, pos + bBuf.length);
+    if (next === -1) break;
+    const part = buf.slice(pos + bBuf.length, next);
+    pos = next;
+    const headEnd = part.indexOf('\r\n\r\n');
+    if (headEnd === -1) continue;
+    const head = part.slice(0, headEnd).toString('utf8');
+    const nameM = /name="([^"]*)"/i.exec(head);
+    const fileM = /filename="([^"]*)"/i.exec(head);
+    const ctM = /content-type:\s*([^\r\n;]+)/i.exec(head);
+    out.push({
+      name: nameM?.[1] ?? '',
+      filename: fileM?.[1] ?? '',
+      mime: ctM?.[1]?.trim() ?? '',
+      data: part.slice(headEnd + 4, part.length - 2), // strip trailing \r\n
+    });
+  }
+  return out;
+}
+const fileObj = (dsId, rec) => ({
+  id: `file-${dsId}`,
+  object: 'file',
+  bytes: rec.bytes ?? null,
+  created_at: rec.at ? Math.floor(rec.at / 1000) : Math.floor(Date.now() / 1000),
+  filename: rec.name ?? null,
+  purpose: 'assistants',
+});
 
 let healthCache = { at: 0, value: null };
 async function getHealth() {
@@ -1525,6 +1592,10 @@ function anthropicToInternal(parsed) {
             const name = String(b.title ?? 'document');
             groupAtts.push({ kind: 'file', url: `data:${s.media_type ?? 'application/pdf'};base64,${s.data}`, name });
             texts.push(`[文件已附上: ${name}]`);
+          } else if (s.type === 'file_id' && typeof s.file_id === 'string') {
+            const name = String(b.title ?? 'file');
+            groupAtts.push({ kind: 'file', refId: String(s.file_id).replace(/^file[-_]/, ''), name });
+            texts.push(`[文件已附上: ${name}]`);
           }
         } else if (b?.type === 'tool_result') {
           const inner = Array.isArray(b.content) ? b.content.map((x) => x?.text ?? '').join('\n') : String(b.content ?? '');
@@ -1589,6 +1660,10 @@ function responsesToInternal(parsed) {
             } else if (b?.type === 'input_file' && typeof b.file_data === 'string') {
               const name = String(b.filename ?? 'file');
               groupAtts.push({ kind: 'file', url: b.file_data, name });
+              texts.push(`[文件已附上: ${name}]`);
+            } else if (b?.type === 'input_file' && typeof b.file_id === 'string') {
+              const name = String(b.filename ?? 'file');
+              groupAtts.push({ kind: 'file', refId: String(b.file_id).replace(/^file[-_]/, ''), name });
               texts.push(`[文件已附上: ${name}]`);
             }
           }
@@ -1762,10 +1837,6 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && url.pathname === '/v1/messages') {
       // Anthropic Messages protocol -> internal completion pipeline.
-      if (CFG.key) {
-        const key = String(req.headers['x-api-key'] ?? '').replace(/^Bearer /, '') || String(req.headers.authorization ?? '').replace(/^Bearer /, '');
-        if (key !== CFG.key) return sendError(res, 401, 'DQ_BAD_KEY');
-      }
       const parsed = JSON.parse(await readBody(req, 32 * 1024 * 1024));
       const internal = anthropicToInternal(parsed);
       const shaped = {
@@ -1780,10 +1851,6 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && url.pathname === '/v1/responses') {
       // OpenAI Responses protocol -> internal completion pipeline.
-      if (CFG.key) {
-        const auth = String(req.headers.authorization ?? '');
-        if (auth !== `Bearer ${CFG.key}`) return sendError(res, 401, 'DQ_BAD_KEY');
-      }
       const parsed = JSON.parse(await readBody(req, 32 * 1024 * 1024));
       const internal = responsesToInternal(parsed);
       const shaped = {
@@ -1794,6 +1861,48 @@ const server = http.createServer(async (req, res) => {
         _attachments: internal.attachments ?? [],
       };
       return processCompletion(req, res, shaped, 'responses');
+    }
+
+    if (req.method === 'POST' && url.pathname === '/v1/files') {
+      // Minimal OpenAI Files API: multipart upload -> page upload (audit
+      // polling + content-hash cache shared with inline attachments).
+      // The returned id (`file-<webFileId>`) is accepted back by
+      // input_file.file_id (Responses) and document source.file_id (Anthropic).
+      const raw = await readBodyRaw(req, 64 * 1024 * 1024);
+      const parts = parseMultipart(raw, req.headers['content-type']);
+      const part = parts.find((p) => p.name === 'file' && p.data.length) ?? parts.find((p) => p.data.length);
+      if (!part) return sendError(res, 400, 'DQ_FILE_FIELD_REQUIRED — multipart form with a "file" field');
+      const account = pickAccount();
+      if (!account) return sendError(res, 503, 'DQ_NO_LIVE_ACCOUNT');
+      const dataUrl = `data:${part.mime || 'application/octet-stream'};base64,${part.data.toString('base64')}`;
+      const up = await uploadAttachmentToPage(account, { kind: 'file', url: dataUrl, name: part.filename || 'file' });
+      return sendJson(res, 200, fileObj(up.id, { name: part.filename || 'file', bytes: part.data.length, at: Date.now() }));
+    }
+
+    if (req.method === 'GET' && url.pathname === '/v1/files') {
+      const seen = new Map();
+      for (const v of fileCache.values()) {
+        if (v.id != null && !seen.has(v.id)) seen.set(v.id, v);
+      }
+      return sendJson(res, 200, { object: 'list', data: [...seen.values()].map((v) => fileObj(v.id, v)) });
+    }
+
+    const fileIdMatch = /^\/v1\/files\/([^/]+)$/.exec(url.pathname);
+    if (fileIdMatch) {
+      const oid = decodeURIComponent(fileIdMatch[1]);
+      const dsId = oid.replace(/^file[-_]/, '');
+      if (req.method === 'GET') {
+        const hit = [...fileCache.values()].find((v) => String(v.id) === dsId);
+        return hit ? sendJson(res, 200, fileObj(hit.id, hit)) : sendError(res, 404, 'DQ_FILE_NOT_FOUND');
+      }
+      if (req.method === 'DELETE') {
+        let deleted = false;
+        for (const [k, v] of fileCache) {
+          if (String(v.id) === dsId) { fileCache.delete(k); deleted = true; }
+        }
+        if (deleted) saveFileCache();
+        return sendJson(res, 200, { id: oid, object: 'file', deleted });
+      }
     }
 
     if (req.method === 'POST' && url.pathname === '/admin/flush-sessions') {
@@ -2091,14 +2200,15 @@ function loadStats() {
 }
 const STATS = loadStats();
 let statsSaveTimer = null;
+function writeStatsSync() {
+  try {
+    const { _today, ...out } = STATS;
+    fs.writeFileSync(STATS_FILE, JSON.stringify(out));
+  } catch { /* ignore */ }
+}
 function saveStats() {
   clearTimeout(statsSaveTimer);
-  statsSaveTimer = setTimeout(() => {
-    try {
-      const { _today, ...out } = STATS;
-      fs.writeFileSync(STATS_FILE, JSON.stringify(out));
-    } catch { /* ignore */ }
-  }, 500);
+  statsSaveTimer = setTimeout(writeStatsSync, 500);
 }
 function statDay() {
   const key = new Date().toDateString();
@@ -2153,4 +2263,9 @@ server.listen(CFG.port, '127.0.0.1', () => {
   log(`accounts: ${accounts.map((a) => `${a.name}@${a.cdpPort}`).join(', ')} | concurrency=${CFG.concurrency} queue=${CFG.queueMax} gap=${CFG.minGapMs}+0..${CFG.jitterMs}ms hour=${CFG.maxPerHour}/acc day=${CFG.maxPerDay || 'unlimited'}/acc think=${CFG.think} quiet='${CFG.quietHours || 'off'}'`);
   log(`session retirement: ${CFG.sessionDeleteTtlMs > 0 ? `delete web sessions inactive >= ${Math.round(CFG.sessionDeleteTtlMs / 86400_000)}d (activity-based)` : 'off'} | sweep every ${Math.round(CFG.sessionSweepMs / 60000)}min (fail-safe: drop mapping only after confirmed web delete)`);
   log(`profile dirs under ${LOCALAPPDATA}${CFG.show ? ' (windows ON-SCREEN for login)' : ' (silent, off-screen)'}`);
+});
+
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => {
+  writeSessionsSync(); writeStatsSync(); // flush debounced state before exit
+  process.exit(0);
 });

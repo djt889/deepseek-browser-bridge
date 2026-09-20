@@ -289,10 +289,14 @@ async function refresh(force) {
       <dt>会话映射</dt><dd>${(s.accStats || []).find((x) => x.name === a.name)?.sessions ?? 0}</dd></dl></div>`;
   }).join('');
 
-  const trouble = accs.filter((a) => !a.loggedIn || a.dead);
-  document.getElementById('alerts').innerHTML = trouble.length
-    ? trouble.map((a) => `<div class="alert"><b>${esc(a.displayName || a.name)}</b>：${a.dead ? '已因连续鉴权失败被摘除' : '未登录'} —— 在该号的浏览器窗口重新登录即可自动恢复${a.dead ? '（无需手动复活）' : ''}；若反复出现，账号可能被风控限制，建议降频观察或换号。</div>`).join('')
+  const softHits = (s.recent || []).filter((r) => r.err && String(r.err).startsWith('DQ_SOFT_THROTTLED')).length;
+  const softAlert = softHits >= 2
+    ? `<div class="alert"><b>疑似官方软限流</b>：最近请求里有 ${softHits} 条“接受但不生成”（DQ_SOFT_THROTTLED）。建议 1~2 小时完全停手——继续发请求（含探针）会延长风控窗口；恢复后如仍误报，调大 DQ_SOFT_THROTTLE_MS。</div>`
     : '';
+  const trouble = accs.filter((a) => !a.loggedIn || a.dead);
+  document.getElementById('alerts').innerHTML = softAlert + (trouble.length
+    ? trouble.map((a) => `<div class="alert"><b>${esc(a.displayName || a.name)}</b>：${a.dead ? '已因连续鉴权失败被摘除' : '未登录'} —— 在该号的浏览器窗口重新登录即可自动恢复${a.dead ? '（无需手动复活）' : ''}；若反复出现，账号可能被风控限制，建议降频观察或换号。</div>`).join('')
+    : '');
 
   const nameOf = (n) => (accs.find((x) => x.name === n) || {}).displayName || n;
   document.getElementById('reqRows').innerHTML = (s.recent || []).map((r) => `<tr>

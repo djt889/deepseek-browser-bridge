@@ -189,12 +189,12 @@ Anthropic SDK / Responses API 客户端同理：把 `base_url` 指到 `http://12
 | `DQ_SESSION_SWEEP_MS` | 600000 | 会话回收清扫周期 |
 | `DQ_SESSION_CONT_GAP_MS` | 15000 | 同会话连续 completion 的最小间隔（空流防护），漏网空流自动重试一次 |
 | `DQ_IDLE_TIMEOUT_MS` | 180000 | 单请求无输出超时 |
+| `DQ_SOFT_THROTTLE_MS` | 60000 | 消息已受理但迟迟不出字 → 判定官方软限流并报 `DQ_SOFT_THROTTLE_MS` 错（`DQ_SOFT_THROTTLED`）；超长 prompt 预处理也会静默这么久，误报就调大 |
 | `DQ_FILE_AUDIT_TIMEOUT_MS` | 45000 | 附件审计轮询超时 |
 | `DQ_FILE_AUDIT_POLL_MS` | 3000 | 附件审计轮询间隔 |
 | `DQ_FILE_CACHE_TTL_MS` | 604800000 | 文件内容哈希缓存 TTL（7 天），同字节文件复用已审计文件 id |
 | `DQ_AUTO_REVIVE` | 1 | 页面重新登录时自动摘除 dead 标记 |
 | `DQ_SHOW` | 0 | `1` = Chrome 窗口屏显启动（等同 `--show`，用于首次登录） |
-| `DQ_KEY` | 空 | （遗留）设死后 `/v1/messages` 与 `/v1/responses` 额外要求该 Key；主鉴权走 auth.json，日常无需设置 |
 
 节流参数保持默认即可安心日常使用——**行为模式（频率画像）是唯一变量**，传输与指纹层无法被区分（真实 Chrome）。
 
@@ -210,7 +210,9 @@ Anthropic SDK / Responses API 客户端同理：把 `base_url` 指到 `http://12
 
 ## 图片 / 文件输入
 
-三协议全支持（实测）：OpenAI content parts 的 `image_url`/`file`、Anthropic 的 `image`/`document` 块（base64 与 url source）、Responses 的 `input_image`/`input_file`（`file_id` 引用除外）。base64 在桥内即刻剥离——字节走网页上传接口（multipart + PoW）换 `ref_file_ids`，不占模型上下文。
+三协议全支持（实测）：OpenAI content parts 的 `image_url`/`file`、Anthropic 的 `image`/`document` 块（base64 / url / file_id source）、Responses 的 `input_image`/`input_file`（base64、url 与 `file_id` 引用）。base64 在桥内即刻剥离——字节走网页上传接口（multipart + PoW）换 `ref_file_ids`，不占模型上下文。
+
+**file_id 引用（`/v1/files`）**：`POST /v1/files`（multipart，字段 `file`）上传一次拿到 `file-xxx` id（与内联附件共享审计轮询和内容哈希缓存），之后 Responses 传 `input_file: {"file_id": "file-xxx"}`、Anthropic 传 `document: {"source": {"type": "file_id", "file_id": "file-xxx"}}` 即可引用，不再重复传字节。另有 `GET /v1/files`（列表）、`GET/DELETE /v1/files/{id}`。
 
 - **审计稳定性**：上传后轮询审计状态（unknown→等，pass→用；reject 且可重试→重传最多 2 次），审计最长等 45s。
 - **内容哈希缓存**：同字节文件复用已审计的文件 id（7 天 TTL），多轮对话重复截图零重传。
@@ -218,7 +220,7 @@ Anthropic SDK / Responses API 客户端同理：把 `base_url` 指到 `http://12
 
 ## 已知限制与实测记录
 
-- **软限流三级升级（重要，实测 2026-09-19）**：短时间高频请求后，DeepSeek 会出现"接受请求但不生成"的软限流（页面流停在消息 id 事件后、桥 180s idle 超时）。实测恢复时间**可达数小时**；且每次挂起的请求在 DeepSeek 侧同样建会话、计入请求量，频繁探针会延长窗口——恢复期间应完全停手。若继续高频重复请求（机器人式模式：大量新会话 + 两字微提示词），风控会三级升级：软限流 → 完全停滞 → **强制下线**（页面自跳 `/sign_in`，token 被清空）。强制下线后重新登录即恢复。节流参数的意义就在避免触发它；测试/探针务必低频、提示词多样化。
+- **软限流三级升级（重要，实测 2026-09-19）**：短时间高频请求后，DeepSeek 会出现"接受请求但不生成"的软限流（页面流停在消息 id 事件后、桥 180s idle 超时）。实测恢复时间**可达数小时**；且每次挂起的请求在 DeepSeek 侧同样建会话、计入请求量，频繁探针会延长窗口——恢复期间应完全停手。若继续高频重复请求（机器人式模式：大量新会话 + 两字微提示词），风控会三级升级：软限流 → 完全停滞 → **强制下线**（页面自跳 `/sign_in`，token 被清空）。强制下线后重新登录即恢复。**桥会主动识别软限流**：请求被受理但 60s 内不出字即报 `DQ_SOFT_THROTTLED`（不再傻等 180s 超时），Dashboard 概览出现告警条提示停手。节流参数的意义就在避免触发它；测试/探针务必低频、提示词多样化。
 - **工具调用依赖提示遵循**：网页版模型对注入指令的遵循弱于官方 API，复杂多工具场景偶发不调用或格式错误（桥会把解析失败的调用以 `_unparsed` 透传，不会崩）。
 - **上下文实测**（2026-09-19，暗号探针法）：单条 prompt 实测到 **100 万 token**（prompt_tokens 1,000,233）仍无截断、开头内容可见，上界未探明。
 - **客户端断开优雅停止**：断开时桥自动调 stop_stream 打断网页生成，已生成的部分文本进入会话树；客户端按标准 API 语义重发完整历史 + 新指令，模型从断点无缝续写（实测断点精确衔接）。任务断开**立即释放**并发槽（报 `DQ_CLIENT_GONE`）。进行中插队：请求体加 `"dq_preempt": true` 可打断正在生成的会话并接续。
@@ -226,7 +228,6 @@ Anthropic SDK / Responses API 客户端同理：把 `base_url` 指到 `http://12
 - **网页会话自动回收（fail-safe）**：按**活跃度**判定——会话名下所有映射中最近一次命中超过 10 天不活跃才回收，老而活跃的会话绝不删。回收时批量调网页删除接口，**确认删除成功后才丢弃本地映射；失败保留、指数退避重试（30min 起步、上限 24h）**。浏览器不在线时清扫只等待、不拉起 Chrome。
 - **同会话空流问题已在桥内解决**：DeepSeek 对同一会话的第二次快速 completion 偶发静默返回空响应（15s 内高发）。桥自动强制 15s 冷却 + 漏网空流自动重试一次，多轮工具循环实测稳定。
 - **网页协议适配状态**：`completion` / `regenerate` / `editMessage`（编辑最后一条用户消息重答）/ `stop_stream` / 会话创建均已验证；`continue` 为实验性（未完成回复的续写推荐客户端追加"继续"消息，实测完美）；`resume_stream`（断线恢复）未适配。
-- Responses 协议的 `file_id` 引用未实现（需建 `/v1/files` 托管端点）——直接传 base64/url 即可，桥内哈希缓存已等价覆盖其核心收益。
 - 上游协议变更（如 PoW 算法升级）会使桥失效——deepseek-pp 已归档，无人跟进修复。
 
 ## 排错
@@ -241,6 +242,7 @@ Anthropic SDK / Responses API 客户端同理：把 `base_url` 指到 `http://12
 | `DQ_IDLE_TIMEOUT` | 思考模式长回复超时，调大 `DQ_IDLE_TIMEOUT_MS` |
 | `DQ_TAB_NAVIGATED` | 请求进行中页面被导航，重试即可 |
 | `DQ_FILE_AUDIT_REJECTED` | 附件被审计拒绝且重试仍拒：换文件或缩小体积 |
+| `DQ_SOFT_THROTTLED` | 疑似官方软限流（受理但不出字）：**完全停手 1~2 小时**，继续请求会延长窗口；确认非限流（如超长 prompt 预处理）则调大 `DQ_SOFT_THROTTLE_MS` |
 
 ## 文件说明
 
