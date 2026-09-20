@@ -33,7 +33,7 @@ const ENV = (name, dflt) => {
 const CFG = {
   port: Number(ENV('DQ_PORT', 39751)),
   key: ENV('DQ_KEY', ''),
-  concurrency: Math.max(1, Number(ENV('DQ_CONCURRENCY', 4))),
+  concurrency: Math.max(1, Number(ENV('DQ_CONCURRENCY', 6))),
   queueMax: Math.max(1, Number(ENV('DQ_QUEUE_MAX', 32))),
   minGapMs: Math.max(0, Number(ENV('DQ_MIN_GAP_MS', 8000))),
   jitterMs: Math.max(0, Number(ENV('DQ_JITTER_MS', 4000))),
