@@ -487,6 +487,7 @@ class AccountThrottle {
     // Smart throttling: track recent behavior pattern
     this.requestTimes = [];     // last 20 request timestamps for smoothing
     this.consecutiveSuccess = 0;
+    this.lastOk = true;         // track previous request outcome
     this.softThrottleHit = false;
   }
 
@@ -555,7 +556,7 @@ class AccountThrottle {
         jitter = Math.floor(jitter * 0.8); // also reduce variance slightly
       }
       // If failed last request → increase interval by 5s
-      else if (!okBefore && error) {
+      else if (!this.lastOk && error) {
         baseGap += 5000;
       }
       
@@ -577,7 +578,7 @@ class AccountThrottle {
 
   done(ok, error) {
     this.lastDone = Date.now();
-    const okBefore = ok; // keep previous success state
+    this.lastOk = ok; // track previous request outcome
     
     if (ok) { 
       this.authFailStreak = 0;
