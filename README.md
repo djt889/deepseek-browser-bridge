@@ -140,6 +140,33 @@ Anthropic SDK / Responses API 客户端同理：把 `base_url` 指到 `http://12
 - `/v1/*` 强制 API Key（`Authorization: Bearer <key>` 或 `x-api-key`）；`/admin/*` 需 Dashboard 登录态（`/admin/stats|logs` 也接受 Key）
 - `auth.json` 首次启动自动生成：`keys`（随机主 Key + `sk-dq-bridge-local` 固定备用 Key）与随机 `dashboardPassword`；面板内可增删 Key、改密码
 
+```json
+{ "keys": ["sk-dq-<随机主Key>", "sk-dq-bridge-local"], "dashboardPassword": "<随机hex>" }
+```
+
+## Admin API 与请求体扩展
+
+`/admin/*` 与 Dashboard 同款能力，可脚本调用（需面板登录态；`stats`/`logs` 也接受 API Key）：
+
+| 端点 | 说明 |
+|---|---|
+| `POST /admin/auth/login` · `/logout` · `/set` | 面板登录 / 登出 / 改密码 |
+| `GET /admin/stats` · `GET /admin/logs` | 统计 / 日志 |
+| `GET /admin/keys` · `POST /admin/keys/add` · `/remove` | 多 Key 查看 / 增 / 删 |
+| `POST /admin/revive` | 手动复活被摘除账号（自动复活常开，一般用不到） |
+| `POST /admin/flush-sessions` | 清空本地会话映射；body `{"deleteWeb":true}` 连网页会话一起删（确认删除成功才丢映射） |
+| `GET /admin/sessions` · `POST /admin/sessions/purge` | 会话映射列表 / 批量清理 |
+| `POST /admin/experimental/complete` | 协议实验端点（显式 session/parent/preempt 控制，返回完整事件 transcript） |
+
+三个协议端点都接受请求体顶层布尔扩展（不影响标准字段）：
+
+| 字段 | 作用 |
+|---|---|
+| `"dq_preempt": true` | 目标会话正在生成时先打断（stop_stream）再下发新请求，被打断的请求返回已生成部分——适合任务进行中补充/更正指令 |
+| `"dq_edit": true` | 编辑最后一条用户消息后重答 |
+| `"dq_regenerate": true` | 重新生成最后一条回复 |
+| `"dq_continue": true` | 续写（实验性：对 stop_stream 停止的消息可能返回空流；未完成回复推荐客户端追加"继续"消息） |
+
 ## 节流参数（环境变量）
 
 | 变量 | 默认 | 说明 |
@@ -163,7 +190,11 @@ Anthropic SDK / Responses API 客户端同理：把 `base_url` 指到 `http://12
 | `DQ_SESSION_CONT_GAP_MS` | 15000 | 同会话连续 completion 的最小间隔（空流防护），漏网空流自动重试一次 |
 | `DQ_IDLE_TIMEOUT_MS` | 180000 | 单请求无输出超时 |
 | `DQ_FILE_AUDIT_TIMEOUT_MS` | 45000 | 附件审计轮询超时 |
+| `DQ_FILE_AUDIT_POLL_MS` | 3000 | 附件审计轮询间隔 |
+| `DQ_FILE_CACHE_TTL_MS` | 604800000 | 文件内容哈希缓存 TTL（7 天），同字节文件复用已审计文件 id |
 | `DQ_AUTO_REVIVE` | 1 | 页面重新登录时自动摘除 dead 标记 |
+| `DQ_SHOW` | 0 | `1` = Chrome 窗口屏显启动（等同 `--show`，用于首次登录） |
+| `DQ_KEY` | 空 | （遗留）设死后 `/v1/messages` 与 `/v1/responses` 额外要求该 Key；主鉴权走 auth.json，日常无需设置 |
 
 节流参数保持默认即可安心日常使用——**行为模式（频率画像）是唯一变量**，传输与指纹层无法被区分（真实 Chrome）。
 
