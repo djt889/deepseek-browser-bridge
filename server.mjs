@@ -1225,6 +1225,8 @@ function sendComplete(job) {
         search: job.search,
         refFileIds: job.refFileIds ?? [],
         vision: job.vision === true,
+        // Optional: pass through thinking level (max/xhigh/high/medium/low)
+        thoughtLevel: job.thoughtLevel ?? null,
         // Optional: pass through thought budget (may be ignored by page)
         thoughtBudget: job.thoughtBudget ?? null,
       }).catch((e) => failJob(job, e.message || e));
