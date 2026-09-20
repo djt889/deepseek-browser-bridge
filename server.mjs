@@ -34,8 +34,21 @@ const CFG = {
   port: Number(ENV('DQ_PORT', 39751)),
   concurrency: Math.max(1, Number(ENV('DQ_CONCURRENCY', 6))),
   queueMax: Math.max(1, Number(ENV('DQ_QUEUE_MAX', 32))),
-  minGapMs: Math.max(0, Number(ENV('DQ_MIN_GAP_MS', 8000))),
-  jitterMs: Math.max(0, Number(ENV('DQ_JITTER_MS', 4000))),
+  // Requests that may be genuinely in flight at once, PER ACCOUNT. Total real
+  // parallelism = live_accounts x perAccountConcurrency (capped by the global
+  // `concurrency`). Replaces the old "wait 8-12s after the previous request
+  // finished" gate, which serialised everything to one request at a time.
+  perAccountConcurrency: Math.max(1, Number(ENV('DQ_PER_ACCOUNT_CONCURRENCY', 3))),
+  // Minimum spacing between request STARTS on one account. Purely anti-burst:
+  // starts are staggered so a batch of N does not fire in the same millisecond
+  // (a perfect simultaneous burst is a much stronger machine signal than N
+  // requests a second or two apart). Does NOT wait for completion — requests
+  // still overlap and run concurrently.
+  startStaggerMs: Math.max(0, Number(ENV('DQ_START_STAGGER_MS', 1500))),
+  // Kept for backward compatibility: when > 0, additionally enforce the old
+  // completed-then-gap pacing (set DQ_MIN_GAP_MS to re-enable serial pacing).
+  minGapMs: Math.max(0, Number(ENV('DQ_MIN_GAP_MS', 0))),
+  jitterMs: Math.max(0, Number(ENV('DQ_JITTER_MS', 0))),
   maxPerHour: Number(ENV('DQ_MAX_PER_HOUR', 90)),
   maxPerDay: Number(ENV('DQ_MAX_PER_DAY', 500)), // per account, 0 = unlimited
   think: ENV('DQ_THINK', '1') !== '0',
@@ -45,6 +58,13 @@ const CFG = {
   // stream that still slips through is retried once automatically.
   sessionContGapMs: Number(ENV('DQ_SESSION_CONT_GAP_MS', 15000)),
   idleTimeoutMs: Number(ENV('DQ_IDLE_TIMEOUT_MS', 180000)),
+  // Runaway guard. A model that falls into a repetition loop keeps streaming,
+  // so the idle watchdog never fires and the client receives tens of thousands
+  // of characters of repeated garbage (observed: 82k chars of looping pseudo
+  // tool calls from a parallel subagent). Detect a repeating tail and stop the
+  // round instead of passing the garbage on.
+  runawayGuard: ENV('DQ_RUNAWAY_GUARD', '1') !== '0',
+  maxOutputChars: Number(ENV('DQ_MAX_OUTPUT_CHARS', 200000)),
   // Page accepted the request (message id arrived) but generation never
   // starts => official soft rate limit. Fail fast with DQ_SOFT_THROTTLED
   // instead of hanging until the idle timeout. Very long prompts being
@@ -494,6 +514,8 @@ class AccountThrottle {
     this.dayCount = 0;
     this.dayKey = new Date().toDateString();
     this.lastDone = 0;
+    this.lastStart = 0;         // start time of the most recent request
+    this.inFlight = 0;          // requests currently generating on this account
     this.authFailStreak = 0;
     this.dead = false;          // set after repeated auth rejections (needs re-login)
     this.coolUntil = 0;         // pow/network cooldown
@@ -502,6 +524,22 @@ class AccountThrottle {
     this.consecutiveSuccess = 0;
     this.lastOk = true;         // track previous request outcome
     this.softThrottleHit = false;
+    this.softThrottleTime = 0;
+  }
+
+  // Backing off after a soft-throttle hit: one request at a time, widely spaced.
+  backingOff() {
+    return this.softThrottleHit && Date.now() - this.softThrottleTime < 600000;
+  }
+
+  // Slots actually usable right now (a backing-off account drops to 1).
+  effectiveConcurrency() {
+    return this.backingOff() ? 1 : CFG.perAccountConcurrency;
+  }
+
+  // Minimum spacing between starts (widened while backing off).
+  effectiveStagger() {
+    return this.backingOff() ? 30000 + Math.random() * 30000 : CFG.startStaggerMs;
   }
 
   parseQuiet() {
@@ -522,7 +560,11 @@ class AccountThrottle {
     return ((q.to - mins + 1440) % 1440) * 60_000 + 30_000;
   }
 
-  async gate(signal) {
+  // Acquire permission to start one request. Concurrent by design: up to
+  // effectiveConcurrency() requests may generate at the same time on this
+  // account, with their starts staggered by effectiveStagger(). The caller
+  // MUST call release() when the round ends (finishJob/failJob/cleanupRound).
+  async gate(signal, job) {
     for (;;) {
       if (signal?.aborted) throw new Error('DQ_CLIENT_CLOSED');
       if (this.dead) throw new Error('DQ_ACCOUNT_DEAD');
@@ -545,48 +587,45 @@ class AccountThrottle {
         continue;
       }
 
-      // === SMART THROTTLING: DYNAMIC INTERVAL BASED ON BEHAVIOR PATTERN ===
-      // Keep last 20 requests for smoothing
-      this.requestTimes.push(now);
-      if (this.requestTimes.length > 20) this.requestTimes.shift();
-      
-      // Calculate base gap with adaptive jitter (more natural than fixed intervals)
-      let baseGap = CFG.minGapMs;
-      let jitter = CFG.jitterMs;
-      
-      // If soft throttle hit recently → extend to 30~60 seconds
-      if (this.softThrottleHit) {
-        const timeSinceSoftThrottle = now - this.softThrottleTime;
-        if (timeSinceSoftThrottle < 600000) { // within 10min of soft throttle
-          baseGap = 30000 + Math.random() * 30000; // 30-60s
-        } else {
-          this.softThrottleHit = false; // recovered after 10min
-        }
-      }
-      // If consecutive success (>5), gradually reduce interval (simulate human acceleration)
-      else if (this.consecutiveSuccess >= 5) {
-        baseGap = Math.max(6000, baseGap - (this.consecutiveSuccess - 4) * 500); // max reduce 1s
-        jitter = Math.floor(jitter * 0.8); // also reduce variance slightly
-      }
-      // If failed last request → increase interval by 5s
-      else if (!this.lastOk) {
-        baseGap += 5000;
-      }
-      
-      const dynamicInterval = baseGap + Math.random() * jitter;
-      
-      const since = now - this.lastDone;
-      if (this.lastDone && since < dynamicInterval) { 
-        const waitTime = dynamicInterval - since;
-        log(`smart throttle: waiting ${Math.round(waitTime/1000)}s (dynamic=${Math.round(dynamicInterval/1000)}s, success=${this.consecutiveSuccess})`);
-        await sleep(waitTime, signal); 
-        continue; 
+      // Concurrency slots: wait for one to free up (slots release on completion).
+      const maxSlots = this.effectiveConcurrency();
+      if (this.inFlight >= maxSlots) {
+        await sleep(300, signal);
+        continue;
       }
 
-      this.hourWindow.push(Date.now());
+      // Stagger STARTS only — never wait for a previous request to finish.
+      const stagger = this.effectiveStagger();
+      const sinceStart = now - this.lastStart;
+      if (this.lastStart && stagger > 0 && sinceStart < stagger) {
+        await sleep(stagger - sinceStart, signal);
+        continue;
+      }
+
+      // Optional legacy pacing: only active when DQ_MIN_GAP_MS > 0.
+      if (CFG.minGapMs > 0) {
+        const interval = CFG.minGapMs + Math.random() * CFG.jitterMs;
+        const since = now - this.lastDone;
+        if (this.lastDone && since < interval) {
+          await sleep(interval - since, signal);
+          continue;
+        }
+      }
+
+      this.inFlight += 1;
+      if (job) job.holdsSlot = true;
+      this.lastStart = Date.now();
+      this.requestTimes.push(this.lastStart);
+      if (this.requestTimes.length > 20) this.requestTimes.shift();
+      this.hourWindow.push(this.lastStart);
       this.dayCount += 1;
       return;
     }
+  }
+
+  // Free one concurrency slot. Safe to call more than once.
+  release() {
+    if (this.inFlight > 0) this.inFlight -= 1;
   }
 
   done(ok, error) {
@@ -627,11 +666,22 @@ class AccountThrottle {
 
 const throttles = new Map(accounts.map((a) => [a.name, new AccountThrottle()]));
 
-// Select the account that has been idle the longest (ds-free-api rotation policy).
+// Pick the account best able to take work right now: one with a FREE
+// concurrency slot first (that is what turns multiple accounts into real
+// parallelism), then the least loaded, then the longest idle. Falls back to
+// the longest-idle account when every slot is busy, so the job still queues on
+// a real account instead of failing.
 function pickAccount() {
   const live = accounts.filter((a) => !throttles.get(a.name).dead);
   if (live.length === 0) return null;
-  return live.sort((a, b) => throttles.get(a.name).lastDone - throttles.get(b.name).lastDone)[0].name;
+  const th = (a) => throttles.get(a.name);
+  const withSlot = live.filter((a) => th(a).inFlight < th(a).effectiveConcurrency());
+  const pool = withSlot.length ? withSlot : live;
+  return pool.sort((a, b) => {
+    const load = th(a).inFlight - th(b).inFlight;
+    if (load !== 0) return load;             // least loaded first
+    return th(a).lastDone - th(b).lastDone;  // then longest idle
+  })[0].name;
 }
 
 // ---------------------------------------------------------------------------
@@ -772,6 +822,7 @@ const TOOL_RULES = [
   'The JSON body MUST be valid JSON on its own. Do NOT add any other text inside the tags, only JSON. Use forward slashes or escaped backslashes for local file paths. You can place tool calls anywhere in your reply (not only at the end).',
   'The system only executes direct tool-name tags. Never use wrapper formats such as <invoke name="tool_name">...</invoke> or <tool_call>...</tool_call>.',
   'The tag name MUST exactly match one of the available tool names.',
+  'When the request needs a tool to be completed (create or change a file, run a command, fetch something), you MUST emit the tool call itself. Never reply with only a description of the action — saying "I will create the file X" without the XML tag means nothing happens and the task fails.',
   'If a tool is listed in Available Tools, it is connected and you can call it by emitting the XML tag. Do NOT say you cannot call listed tools.',
   'Never output pseudo tool-call JSON such as {"tool":"name","arguments":{...}} in a Markdown code block. That is explanation text, not an executable call.',
   'Never place executable tool XML in a thinking/reasoning section. Put tool XML in the final assistant answer content so the system can execute it.',
@@ -782,6 +833,7 @@ const TOOL_FORMAT_REMINDER = [
   '工具调用格式提醒：',
   '可用工具标签名：{names}',
   '这些工具已连接，可以执行。不要声称自己无法调用列表中的工具。',
+  '需要动手完成的任务（建/改文件、跑命令、查询）必须真的发出工具标签；只描述"我将要做什么"而不发标签会导致任务失败。',
   '调用工具时，只能使用与工具名一致的直接 XML 标签，并把合法 JSON 放在标签体内。',
   '不要使用 <invoke name="...">、<tool_call>、Markdown 代码块、{"tool":"...","arguments":{...}} 或任何包装格式。',
 ].join('\n');
@@ -858,15 +910,33 @@ function joinTranscript(msgs, tools) {
   return head + rest + reminder;
 }
 
+// Best-effort repair of the mildly malformed JSON models emit (trailing commas,
+// single-quoted strings). Deliberately conservative: repairs are only applied
+// when they produce parseable JSON, so a failed repair still falls through to
+// the tag parser rather than inventing arguments.
+function tryRepairJson(s) {
+  const attempts = [s.replace(/,\s*([}\]])/g, '$1')];   // trailing commas
+  if (!s.includes('"')) attempts.push(s.replace(/'/g, '"')); // '...' -> "..."
+  for (const a of attempts) {
+    try { return JSON.parse(a); } catch { /* try next */ }
+  }
+  return undefined;
+}
+
 // Parse the inside of a tool tag into an arguments object. The model emits
 // either a JSON body (`<name>{"q":"x"}</name>`) or one nested tag per parameter
 // (`<name><path>p</path><content>c</content></name>`) — the latter is common for
 // multi-argument tools, so handle both instead of dumping it into _unparsed.
 function parseToolArgs(body) {
-  const s = String(body ?? '').trim();
+  let s = String(body ?? '').trim();
   if (!s) return {};
+  // Models sometimes wrap the body in a markdown code fence.
+  const fence = /^```[a-zA-Z]*\s*([\s\S]*?)\s*```$/.exec(s);
+  if (fence) s = fence[1].trim();
   if (s.startsWith('{') || s.startsWith('[')) {
-    try { return JSON.parse(s); } catch { /* fall through to tag parsing */ }
+    try { return JSON.parse(s); } catch { /* try repairs, then tags */ }
+    const repaired = tryRepairJson(s);
+    if (repaired !== undefined) return repaired;
   }
   const args = {};
   const tagRe = /<([A-Za-z_][A-Za-z0-9_.:-]*)\s*>([\s\S]*?)<\/\1>/g;
@@ -893,9 +963,43 @@ function createToolStreamFilter(toolNames) {
   const nameSet = new Set(names);
   const namePrefixRe = /^<\/?([A-Za-z_][A-Za-z0-9_.:-]*)?$/;
   const calls = [];
+  const unknownTags = [];   // identifier-shaped tags not in the tool list (misspellings)
   let pending = '';
 
   const isToolNamePrefix = (s) => names.some((n) => n === s || n.startsWith(s));
+
+  // Locate the close tag that actually ends this call. A plain indexOf is
+  // wrong whenever the body contains the tag's own name — which happens both
+  // by accident (`content:"a</write>b"`) and from nesting — because it stops
+  // at the first `</name>` inside the body and truncates the call into
+  // _unparsed with the remainder leaking out as visible text. Scan instead:
+  // skip JSON string literals and count nested same-name opens.
+  // Returns the index of the matching `</name>`, or -1 if not yet received.
+  function findToolClose(buf, from, name) {
+    const openTag = `<${name}>`;
+    const closeTag = `</${name}>`;
+    let depth = 1, i = from, inStr = false, esc = false;
+    while (i < buf.length) {
+      const ch = buf[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === '\\') esc = true;
+        else if (ch === '"') inStr = false;
+        i += 1;
+        continue;
+      }
+      if (ch === '"') { inStr = true; i += 1; continue; }
+      if (buf.startsWith(closeTag, i)) {
+        depth -= 1;
+        if (depth === 0) return i;
+        i += closeTag.length;
+        continue;
+      }
+      if (buf.startsWith(openTag, i)) { depth += 1; i += openTag.length; continue; }
+      i += 1;
+    }
+    return -1;
+  }
 
   // Consume `pending`; return safe-to-emit content, hold incomplete tails.
   function scan(final) {
@@ -910,7 +1014,7 @@ function createToolStreamFilter(toolNames) {
         const name = complete[1];
         const isOpenTool = !complete[0].startsWith('</') && nameSet.has(name);
         if (isOpenTool) {
-          const close = pending.indexOf(`</${name}>`, lt + complete[0].length);
+          const close = findToolClose(pending, lt + complete[0].length, name);
           if (close === -1) {
             // call still streaming in — hold from the open tag
             if (final) { emit += rest; pos = pending.length; break; }
@@ -923,6 +1027,12 @@ function createToolStreamFilter(toolNames) {
           emit += pending.slice(pos, lt);
           pos = close + name.length + 3;
           continue;
+        }
+        // An identifier-shaped tag that is NOT in the tool list is usually the
+        // model misspelling a tool name; the call would otherwise vanish into
+        // the visible text with no trace. Record it so the server can log it.
+        if (!complete[0].startsWith('</') && /^[A-Za-z_][A-Za-z0-9_.:-]*$/.test(name) && !nameSet.has(name)) {
+          unknownTags.push(name);
         }
         // non-tool tag: plain text, emit whole tag
         emit += pending.slice(pos, lt) + complete[0];
@@ -947,7 +1057,39 @@ function createToolStreamFilter(toolNames) {
     push(text) { pending += text; return scan(false); },
     flush() { const out = scan(true); const tail = pending; pending = ''; return out + tail; },
     calls,
+    unknownTags,
   };
+}
+
+// Cheap runaway detection for streamed output. Returns a reason string when
+// the text looks like a repetition loop, else null. Deliberately conservative
+// — legitimate answers repeat short phrases, so this requires a LONG window
+// (1600 chars) to occur THREE or more times inside the recent tail before it
+// calls it a loop. That is the signature of the runaway actually observed
+// (tens of thousands of chars of repeated pseudo tool calls).
+const RUNAWAY_WINDOW = 1600;
+const RUNAWAY_SPAN = 16000;   // how far back to look for repeats
+const RUNAWAY_HITS = 3;       // occurrences of the same window before aborting
+function runawayReason(text) {
+  if (!CFG.runawayGuard) return null;
+  if (text.length > CFG.maxOutputChars) {
+    return `output exceeded ${CFG.maxOutputChars} chars`;
+  }
+  if (text.length < RUNAWAY_SPAN) return null;
+  const tail = text.slice(-RUNAWAY_WINDOW);
+  // Ignore a tail with almost no variety (harmless padding / separator runs).
+  if (new Set(tail).size < 8) return null;
+  const hay = text.slice(-RUNAWAY_SPAN, -RUNAWAY_WINDOW);
+  let hits = 0;
+  let from = 0;
+  for (;;) {
+    const at = hay.indexOf(tail, from);
+    if (at === -1) break;
+    hits += 1;
+    if (hits >= RUNAWAY_HITS) return 'repetition loop detected';
+    from = at + 1;
+  }
+  return null;
 }
 
 const hashKey = (msgs) => crypto.createHash('sha256').update(JSON.stringify(msgs)).digest('hex').slice(0, 24);
@@ -1075,6 +1217,14 @@ const sessionLocks = new Map(); // `${account}/${sessionId}` -> promise tail
 const sessionLastDone = new Map(); // `${account}/${sessionId}` -> last completion ts
 const generatingBySession = new Map(); // `${account}/${sessionId}` -> in-flight job
 
+// Free the account concurrency slot a job holds (idempotent). Every acquire in
+// gate() must be matched exactly once, whichever path ends the round.
+function releaseSlot(job) {
+  if (!job?.holdsSlot) return;
+  job.holdsSlot = false;
+  throttles.get(job.account)?.release();
+}
+
 function withSessionLock(lockKey, fn) {
   const prev = sessionLocks.get(lockKey) ?? Promise.resolve();
   const run = prev.then(fn, fn);
@@ -1089,6 +1239,7 @@ function finishJob(job, messageId) {
   clearTimeout(job.watchdog);
   clearTimeout(job.graceStopFallback);
   job.releaseSlot?.();   // free the concurrency slot without waiting on the lock chain
+  releaseSlot(job);      // free the account concurrency slot
   throttles.get(job.account)?.done(true);
   const consumed = job.usedDelta ? job.prefix : job.messages;
   rememberSession(
@@ -1152,6 +1303,7 @@ function failJob(job, error) {
   // and holding the slot would starve the queue. Idempotent — a later
   // runWithRotation finally is a no-op.
   job.releaseSlot?.();
+  releaseSlot(job);      // free the account concurrency slot
   // Last: refill freed slots now that this job has fully settled.
   pump();
 }
@@ -1181,6 +1333,7 @@ function sendComplete(job) {
         }
       }
       throttles.get(job.account)?.done(!job.error, job.error);
+      releaseSlot(job);
     };
     if (job.sessionId) generatingBySession.set(`${job.account}/${job.sessionId}`, job);
     job.onEvent = (ev) => {
@@ -1201,8 +1354,29 @@ function sendComplete(job) {
         clearTimeout(job.softTimer); job.softTimer = null;
         if (process.env.DQ_TRACE_CHUNK === '1') log(`[chunk] ${JSON.stringify(ev.text)}`);
         job.text += ev.text;
-        const shown = job.toolFilter ? job.toolFilter.push(ev.text) : ev.text;
-        if (job.stream && shown) emitDelta(job, 'text', shown);
+        // Feed the tool filter ONCE per chunk and only while streaming. In
+        // non-streaming mode the whole text is fed in the `done` handler, so
+        // feeding here as well made every tool call parse twice — clients then
+        // executed the same tool twice (wrote the same file twice, searched
+        // twice). Keep exactly one feed path per mode.
+        if (!job.toolFilter) {
+          if (job.stream && ev.text) emitDelta(job, 'text', ev.text);
+        } else if (job.stream) {
+          const shown = job.toolFilter.push(ev.text);
+          if (shown) emitDelta(job, 'text', shown);
+        }
+        // Runaway check, sampled (every ~2k chars) so long outputs stay cheap.
+        job.guardAt = (job.guardAt ?? 0);
+        if (job.text.length - job.guardAt >= 2000) {
+          job.guardAt = job.text.length;
+          const why = runawayReason(job.text);
+          if (why) {
+            log(`runaway output aborted (${why}, ${job.text.length}c) — stopping generation`);
+            const mid = job.responseMessageId;
+            if (mid) stopStreamViaPage(job.account, job.sessionId, mid).catch(() => {});
+            return failJob(job, `DQ_OUTPUT_RUNAWAY — ${why}`);
+          }
+        }
       } else if (ev.type === 'reasoning') {
         job.firstDeltaAt = job.firstDeltaAt || Date.now();
         clearTimeout(job.softTimer); job.softTimer = null;
@@ -1225,6 +1399,16 @@ function sendComplete(job) {
             type: 'function',
             function: { name: c.name, arguments: JSON.stringify(c.args) },
           }));
+          // Surface the two silent failure modes so they are diagnosable
+          // instead of looking like "the model just answered with text".
+          const unparsed = job.toolFilter.calls.filter((c) => c.args && c.args._unparsed);
+          if (unparsed.length) {
+            log(`tool args unparsed (${unparsed.map((c) => c.name).join(',')}) — check model output format`);
+          }
+          const unknown = [...new Set(job.toolFilter.unknownTags ?? [])].filter((n) => n);
+          if (unknown.length) {
+            log(`unknown tool tag(s): ${unknown.join(',')} — model likely misspelled a tool name (offered: ${job.toolNames.join(',')})`);
+          }
         }
         // Built-in tools were removed by design: ALL tool calls go back to
         // the client (standard OpenAI function calling).
@@ -1236,9 +1420,23 @@ function sendComplete(job) {
         const hasAnswer = !!job.text || !!(job.toolFilter?.calls?.length);
         if (!hasAnswer && job.sessionId && !job.emptyRetry) {
           job.emptyRetry = true;
+          // A FULLY empty stream (no text AND no reasoning) is not a model
+          // non-answer — it is the web API's silent refusal, the same signal as
+          // a soft throttle, and it shows up when too many generations run at
+          // once on one account. Fail the account into back-off (1 slot + wide
+          // stagger) so the burst stops before it escalates to a real cooldown.
+          if (!job.text && !job.reasoning) {
+            const th = throttles.get(job.account);
+            if (th && !th.backingOff()) {
+              th.softThrottleHit = true;
+              th.softThrottleTime = Date.now();
+              th.consecutiveSuccess = 0;
+              log(`account ${job.account}: empty stream (no text, no reasoning) — backing off to 1 slot for 10min`);
+            }
+          }
           log(`empty answer detected (text=${job.text.length}c reasoning=${job.reasoning.length}c) — retrying once on a fresh session (sess=${job.sessionId.slice(0, 8)})`);
           (async () => {
-            await throttles.get(job.account).gate(job.abortController.signal);
+            await throttles.get(job.account).gate(job.abortController.signal, job);
             const sKey = `${job.account}/${job.sessionId}`;
             const since = Date.now() - (sessionLastDone.get(sKey) ?? 0);
             if (since < CFG.sessionContGapMs) {
@@ -1253,6 +1451,13 @@ function sendComplete(job) {
             job.parentId = null;
             job.usedDelta = false;
             job.sessionBound = false;
+            // Thinking that consumed the whole turn (reasoning present, no
+            // answer and no tool call) reproduces on retry if thinking stays
+            // on — the model just thinks again. Force a direct answer.
+            if (job.think && job.reasoning) {
+              job.think = false;
+              log(`retry: thinking disabled for this round (previous turn reasoned without answering)`);
+            }
             if (!job.usedDelta) rememberSession(job.account, job.prefix, job.sessionId, null);
             await sendComplete(job);
           })().catch((e) => failJob(job, e.message || e));
@@ -1329,7 +1534,7 @@ async function runJob(job) {
       job.preemptDone = true;
     }
     await withSessionLock(`${job.account}/${job.sessionId}`, async () => {
-      await throttles.get(job.account).gate(job.abortController.signal);
+      await throttles.get(job.account).gate(job.abortController.signal, job);
       // Same-session cooldown: a second completion fired too soon after the
       // previous one gets a silently EMPTY stream from DeepSeek.
       const sKey = `${job.account}/${job.sessionId}`;
@@ -2334,6 +2539,7 @@ const server = http.createServer(async (req, res) => {
           authFailStreak: th.authFailStreak,
           loggedIn: h.loggedIn ?? false, page: h.page ?? h.error ?? null,
           dayCount: h.dayCount ?? th.dayCount ?? 0, lastDone: h.lastDone ?? th.lastDone ?? null,
+          inFlight: th.inFlight, slots: th.effectiveConcurrency(),
         };
       });
       const accStats = accounts.map((a) => {
@@ -2512,7 +2718,7 @@ loadFileCache();
 const BOOT_TS = Date.now();
 server.listen(CFG.port, '127.0.0.1', () => {
   log(`DeepSeek Browser Bridge on http://127.0.0.1:${CFG.port}/v1`);
-  log(`accounts: ${accounts.map((a) => `${a.name}@${a.cdpPort}`).join(', ')} | concurrency=${CFG.concurrency} queue=${CFG.queueMax} gap=${CFG.minGapMs}+0..${CFG.jitterMs}ms hour=${CFG.maxPerHour}/acc day=${CFG.maxPerDay || 'unlimited'}/acc think=${CFG.think} quiet='${CFG.quietHours || 'off'}'`);
+  log(`accounts: ${accounts.map((a) => `${a.name}@${a.cdpPort}`).join(', ')} | parallel=${accounts.length}x${CFG.perAccountConcurrency} (cap ${CFG.concurrency}) stagger=${CFG.startStaggerMs}ms${CFG.minGapMs ? ` legacyGap=${CFG.minGapMs}+0..${CFG.jitterMs}ms` : ''} hour=${CFG.maxPerHour}/acc day=${CFG.maxPerDay || 'unlimited'}/acc think=${CFG.think} quiet='${CFG.quietHours || 'off'}'`);
   log(`session retirement: ${CFG.sessionDeleteTtlMs > 0 ? `delete web sessions inactive >= ${Math.round(CFG.sessionDeleteTtlMs / 86400_000)}d (activity-based)` : 'off'} | sweep every ${Math.round(CFG.sessionSweepMs / 60000)}min (fail-safe: drop mapping only after confirmed web delete)`);
   log(`profile dirs under ${LOCALAPPDATA}${CFG.show ? ' (windows ON-SCREEN for login)' : ' (silent, off-screen)'}`);
 });

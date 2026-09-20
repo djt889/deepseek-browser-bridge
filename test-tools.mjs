@@ -3,7 +3,10 @@ import fs from 'node:fs';
 import assert from 'node:assert/strict';
 
 const src = fs.readFileSync(new URL('./server.mjs', import.meta.url), 'utf8');
-const start = src.indexOf('function createToolStreamFilter');
+// Slice from the first helper the filter depends on (tryRepairJson, which
+// precedes parseToolArgs) through the end of createToolStreamFilter, so the
+// extracted code is self-contained.
+const start = src.indexOf('function tryRepairJson');
 const end = src.indexOf('\nconst hashKey', start);
 const fnSrc = src.slice(start, end);
 const make = (names) => new Function(`${fnSrc}; return createToolStreamFilter(${JSON.stringify(names)});`)();

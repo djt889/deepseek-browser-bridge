@@ -7,3 +7,5 @@ accounts.json
 sessions.json
 files.json
 stats.json
+# archify visual-check intermediate artifacts
+docs/*.visual-check.*

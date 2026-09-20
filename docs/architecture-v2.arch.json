@@ -1,0 +1,517 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "DeepSeek Browser Bridge 详细架构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "main-path",
+        "label": "主请求链路",
+        "focus": [
+          "clients",
+          "gateway",
+          "ep_openai",
+          "ep_anthropic",
+          "ep_responses",
+          "internal",
+          "sched",
+          "throttle",
+          "cdp",
+          "inject",
+          "deepseek"
+        ],
+        "note": "客户端 → 协议适配 → 排队 → 账号级节流 → CDP → 页面注入 → DeepSeek 网页版。"
+      },
+      {
+        "id": "keepalive",
+        "label": "保号与号池",
+        "focus": [
+          "throttle",
+          "sched",
+          "cdp",
+          "auth",
+          "sessions"
+        ],
+        "note": "速率闸门、换号轮换，以及本地凭据与会话状态文件。"
+      },
+      {
+        "id": "tools-reply",
+        "label": "工具调用与回传",
+        "focus": [
+          "tools",
+          "internal",
+          "stream",
+          "deepseek",
+          "clients"
+        ],
+        "note": "XML 工具协议注入与解析，以及三协议响应分流回传。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "clients",
+      "type": "external",
+      "label": "本地客户端 / Agent",
+      "sublabel": "pi agent · Claude Code",
+      "pos": [
+        30,
+        210
+      ],
+      "size": [
+        150,
+        80
+      ]
+    },
+    {
+      "id": "gateway",
+      "type": "backend",
+      "label": "HTTP 服务 39751",
+      "sublabel": "/v1/* · /admin/* · Bearer",
+      "pos": [
+        210,
+        210
+      ],
+      "size": [
+        170,
+        80
+      ],
+      "tag": "Bearer 鉴权"
+    },
+    {
+      "id": "ep_openai",
+      "type": "backend",
+      "label": "/v1/chat/completions",
+      "sublabel": "OpenAI 原生 · 流式",
+      "pos": [
+        405,
+        146
+      ],
+      "size": [
+        155,
+        60
+      ]
+    },
+    {
+      "id": "ep_anthropic",
+      "type": "backend",
+      "label": "/v1/messages",
+      "sublabel": "anthropicToInternal()",
+      "pos": [
+        405,
+        218
+      ],
+      "size": [
+        155,
+        60
+      ]
+    },
+    {
+      "id": "ep_responses",
+      "type": "backend",
+      "label": "/v1/responses",
+      "sublabel": "responsesToInternal()",
+      "pos": [
+        405,
+        290
+      ],
+      "size": [
+        155,
+        60
+      ]
+    },
+    {
+      "id": "internal",
+      "type": "backend",
+      "label": "统一内部消息模型",
+      "sublabel": "messages + tools + 增量",
+      "pos": [
+        585,
+        210
+      ],
+      "size": [
+        145,
+        80
+      ]
+    },
+    {
+      "id": "stream",
+      "type": "backend",
+      "label": "响应按协议分流",
+      "sublabel": "sseWrite / anthropic / respStream",
+      "pos": [
+        755,
+        210
+      ],
+      "size": [
+        190,
+        80
+      ],
+      "tag": "与请求同一条流水线"
+    },
+    {
+      "id": "deepseek",
+      "type": "external",
+      "label": "DeepSeek 网页版",
+      "sublabel": "真实 TLS · Cookie · 数美",
+      "pos": [
+        1050,
+        210
+      ],
+      "size": [
+        150,
+        80
+      ],
+      "tag": "chat.deepseek.com"
+    },
+    {
+      "id": "dash",
+      "type": "frontend",
+      "label": "Dashboard 面板",
+      "sublabel": "/dashboard · 多 Key 管理",
+      "pos": [
+        30,
+        430
+      ],
+      "size": [
+        145,
+        80
+      ]
+    },
+    {
+      "id": "sched",
+      "type": "backend",
+      "label": "任务队列 pump()",
+      "sublabel": "并发槽 6 · 队列上限 32",
+      "pos": [
+        430,
+        430
+      ],
+      "size": [
+        165,
+        80
+      ],
+      "tag": "finishJob / failJob"
+    },
+    {
+      "id": "throttle",
+      "type": "security",
+      "label": "账号级并发槽 + 速率闸门",
+      "sublabel": "并发 3/号 · 90/时 · 500/天",
+      "pos": [
+        620,
+        430
+      ],
+      "size": [
+        190,
+        80
+      ],
+      "tag": "coolUntil · dead · 软限流"
+    },
+    {
+      "id": "cdp",
+      "type": "backend",
+      "label": "CDP 连接管理",
+      "sublabel": "class Cdp · :9222+ 每号一个",
+      "pos": [
+        845,
+        430
+      ],
+      "size": [
+        160,
+        80
+      ],
+      "tag": "屏幕外 headed"
+    },
+    {
+      "id": "inject",
+      "type": "backend",
+      "label": "inject.js 页面注入",
+      "sublabel": "PoW · 页面 fetch · SSE",
+      "pos": [
+        1110,
+        430
+      ],
+      "size": [
+        150,
+        80
+      ],
+      "tag": "Runtime.evaluate"
+    },
+    {
+      "id": "auth",
+      "type": "security",
+      "label": "auth.json 鉴权",
+      "sublabel": "多 Key + 面板密码",
+      "pos": [
+        210,
+        590
+      ],
+      "size": [
+        155,
+        80
+      ],
+      "tag": "stats.json 15 天"
+    },
+    {
+      "id": "tools",
+      "type": "backend",
+      "label": "工具调用解析",
+      "sublabel": "TOOL_RULES → prompt 注入",
+      "pos": [
+        390,
+        590
+      ],
+      "size": [
+        170,
+        80
+      ],
+      "tag": "流式扫描 → tool_calls"
+    },
+    {
+      "id": "sessions",
+      "type": "database",
+      "label": "会话映射 sessions.json",
+      "sublabel": "lookupSession 前缀哈希 · 会话锁",
+      "pos": [
+        585,
+        590
+      ],
+      "size": [
+        170,
+        80
+      ],
+      "tag": "会话锁 · 10 天回收"
+    },
+    {
+      "id": "files",
+      "type": "database",
+      "label": "文件缓存 files.json",
+      "sublabel": "内容哈希 · TTL 7 天",
+      "pos": [
+        780,
+        590
+      ],
+      "size": [
+        170,
+        80
+      ],
+      "tag": "uploadFileViaPage"
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "本机回环 127.0.0.1（可信区）",
+      "wraps": [
+        "gateway",
+        "ep_openai",
+        "ep_anthropic",
+        "ep_responses",
+        "internal",
+        "stream",
+        "sched",
+        "throttle",
+        "cdp",
+        "auth",
+        "tools",
+        "sessions",
+        "files"
+      ],
+      "pad": 16
+    },
+    {
+      "kind": "security-group",
+      "label": "Chrome 页面上下文",
+      "wraps": [
+        "inject"
+      ],
+      "pad": 14
+    },
+    {
+      "kind": "region",
+      "label": "公网 DeepSeek 服务端",
+      "wraps": [
+        "deepseek"
+      ],
+      "pad": 14
+    }
+  ],
+  "connections": [
+    {
+      "id": "clients-gateway",
+      "from": "clients",
+      "to": "gateway",
+      "label": "POST /v1/*",
+      "variant": "emphasis",
+      "labelAt": [
+        195,
+        192
+      ]
+    },
+    {
+      "id": "gateway-ep-openai",
+      "from": "gateway",
+      "to": "ep_openai"
+    },
+    {
+      "id": "gateway-ep-anthropic",
+      "from": "gateway",
+      "to": "ep_anthropic"
+    },
+    {
+      "id": "gateway-ep-responses",
+      "from": "gateway",
+      "to": "ep_responses"
+    },
+    {
+      "id": "ep-openai-internal",
+      "from": "ep_openai",
+      "to": "internal"
+    },
+    {
+      "id": "ep-anthropic-internal",
+      "from": "ep_anthropic",
+      "to": "internal"
+    },
+    {
+      "id": "ep-responses-internal",
+      "from": "ep_responses",
+      "to": "internal"
+    },
+    {
+      "id": "internal-sched",
+      "from": "internal",
+      "to": "sched",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "sched-throttle",
+      "from": "sched",
+      "to": "throttle"
+    },
+    {
+      "id": "throttle-cdp",
+      "from": "throttle",
+      "to": "cdp"
+    },
+    {
+      "id": "cdp-inject",
+      "from": "cdp",
+      "to": "inject",
+      "label": "CDP RPC 命令",
+      "variant": "emphasis"
+    },
+    {
+      "id": "inject-deepseek",
+      "from": "inject",
+      "to": "deepseek",
+      "label": "页面自身 fetch",
+      "variant": "emphasis",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "deepseek-stream",
+      "from": "deepseek",
+      "to": "stream",
+      "label": "经 CDP 回传",
+      "variant": "emphasis"
+    },
+    {
+      "id": "stream-clients",
+      "from": "stream",
+      "to": "clients",
+      "label": "SSE / 事件流按协议回传",
+      "variant": "emphasis",
+      "fromSide": "top",
+      "toSide": "top",
+      "via": [
+        [
+          850,
+          86
+        ],
+        [
+          105,
+          86
+        ]
+      ]
+    },
+    {
+      "id": "dash-gateway",
+      "from": "dash",
+      "to": "gateway",
+      "label": "admin API"
+    },
+    {
+      "id": "auth-gateway",
+      "from": "auth",
+      "to": "gateway",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "sched-tools",
+      "from": "sched",
+      "to": "tools",
+      "label": "工具协议注入 / 扫描",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        400,
+        552
+      ]
+    },
+    {
+      "id": "sched-sessions",
+      "from": "sched",
+      "to": "sessions",
+      "label": "会话复用",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "cdp-files",
+      "from": "cdp",
+      "to": "files",
+      "label": "uploadFileViaPage",
+      "fromSide": "bottom",
+      "toSide": "top"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "请求链路",
+      "items": [
+        "OpenAI / Anthropic / Responses 三入口",
+        "共用一条内部流水线 + 统一消息模型",
+        "会话前缀哈希命中则只发增量消息",
+        "响应按客户端协议分流回传"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "保号节流",
+      "items": [
+        "账号级并发槽 + 速率闸门，可真并行",
+        "间隔 8s + 抖动，90/时 · 500/天",
+        "软限流：60s 无首 token 即失败",
+        "429 冷却 5 分钟，反复失败标 dead"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "真实性与状态",
+      "items": [
+        "请求由页面自身 fetch 发出，指纹全真",
+        "PoW 用官方 WASM 在本地求解",
+        "无原生 FC：XML 标签回填 tool_calls",
+        "会话 10 天回收、文件哈希缓存"
+      ]
+    }
+  ]
+}
