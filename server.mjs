@@ -111,7 +111,13 @@ class ProxyPool {
   }
 }
 
-const proxyPools = new ProxyPool(accounts);
+// ---------------------------------------------------------------------------
+// Account initialization
+// ---------------------------------------------------------------------------
+
+const sleep = (ms, signal) => delay(ms, null, { signal }).catch(() => {
+  throw new Error('DQ_CLIENT_CLOSED');
+});
 
 // Webhook sender (fire-and-forget with timeout)
 async function sendWebhook(event, payload) {
@@ -125,9 +131,6 @@ async function sendWebhook(event, payload) {
     }).catch(() => { /* ignore failed webhook delivery */ });
   }
 }
-const sleep = (ms, signal) => delay(ms, null, { signal }).catch(() => {
-  throw new Error('DQ_CLIENT_CLOSED');
-});
 
 async function fetchJson(url, opts = {}) {
   const res = await fetch(url, opts);
