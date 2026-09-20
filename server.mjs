@@ -67,50 +67,6 @@ const CFG = {
 const nowHMS = () => { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; };
 let log = (...args) => console.log(`[dq ${nowHMS()}]`, ...args);
 
-// Proxy pool rotation management per account
-class ProxyPool {
-  constructor(accountsList) {
-    // Load proxy config from accounts.json + env var DQ_PROXIES
-    this.pools = new Map();
-    for (const acc of accountsList) {
-      const rawProxies = ENV(`DQ_PROXY_${acc.name}`, '');
-      let proxies = [];
-      if (rawProxies) {
-        try { proxies = JSON.parse(rawProxies); } catch { /* ignore */ }
-      } else if (ENV('DQ_DEFAULT_PROXY')) {
-        proxies = [ENV('DQ_DEFAULT_PROXY')]; // single default for all accounts
-      }
-      this.pools.set(acc.name, {
-        list: proxies.map(u => ({ url: u, failCount: 0, lastUsed: 0 })),
-        currentIndex: 0,
-        mode: ENV('DQ_PROXY_ROTATION', 'round-robin'), // round-robin | random | per-request
-      });
-    }
-  }
-  
-  getAvailable(accountName) {
-    const pool = this.pools.get(accountName);
-    if (!pool || pool.list.length === 0) return null;
-    
-    // Round-robin or random selection
-    let idx;
-    if (pool.mode === 'random') {
-      idx = Math.floor(Math.random() * pool.list.length);
-    } else if (pool.mode === 'per-request') {
-      // Always pick best available (lowest failCount)
-      idx = pool.list.reduce((best, cur, i) => 
-        cur.failCount < pool.list[best].failCount ? i : best, 0);
-    } else {
-      idx = pool.currentIndex % pool.list.length;
-      pool.currentIndex++;
-    }
-    
-    const entry = pool.list[idx];
-    entry.lastUsed = Date.now();
-    return entry.url;
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Account initialization
 // ---------------------------------------------------------------------------
