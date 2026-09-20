@@ -196,10 +196,20 @@ class Cdp {
 
   async connect() {
     const wsUrl = await this.findPageWsUrl();
+    // Drop any previous socket first: a stale, still-open connection keeps
+    // receiving Runtime.bindingCalled and would deliver every report twice.
+    const prev = this.ws;
+    if (prev) {
+      this.ws = null;
+      try { prev.onmessage = null; prev.onclose = null; prev.onerror = null; prev.close(); } catch { /* already closed */ }
+    }
+    this.injected = false;
     await new Promise((resolve, reject) => {
       const ws = new WebSocket(wsUrl);
       let settled = false;
       ws.onopen = async () => {
+        // A newer connect() may have superseded this socket while it opened.
+        if (this.ws && this.ws !== ws) { try { ws.close(); } catch { /* noop */ } return; }
         this.ws = ws;
         try {
           await this.send('Runtime.enable');
@@ -215,6 +225,8 @@ class Cdp {
         }
       };
       ws.onmessage = (ev) => {
+        // Ignore events from a socket that is no longer the active one.
+        if (this.ws !== ws) return;
         let msg;
         try { msg = JSON.parse(ev.data); } catch { return; }
         if (msg.id !== undefined && this.pending.has(msg.id)) {
@@ -234,6 +246,7 @@ class Cdp {
         }
       };
       ws.onclose = () => {
+        if (this.ws !== ws) return;
         this.ws = null;
         this.injected = false;
         for (const p of this.pending.values()) p.reject(new Error('DQ_TAB_CLOSED'));
@@ -1075,6 +1088,7 @@ function finishJob(job, messageId) {
   if (job.cmdId) activeCmds.delete(job.cmdId);
   clearTimeout(job.watchdog);
   clearTimeout(job.graceStopFallback);
+  job.releaseSlot?.();   // free the concurrency slot without waiting on the lock chain
   throttles.get(job.account)?.done(true);
   const consumed = job.usedDelta ? job.prefix : job.messages;
   rememberSession(
@@ -1113,6 +1127,18 @@ function failJob(job, error) {
   throttles.get(job.account)?.done(false, job.error);
   if (job.startedAt) recordRequest(job);
   log(`fail [${job.account ?? '?'}] sess=${String(job.sessionId ?? '').slice(0, 8)} ${job.error}`);
+  // A job that fails while still QUEUED (e.g. the client disconnected before it
+  // was ever dispatched) leaves queue.length permanently occupied, and pump()
+  // only runs when a *running* job settles — so the queue would never drain.
+  // Drop finished entries and refill slots here.
+  const before = queue.length;
+  if (before && queue.some((q) => q.finished || q.abortController.signal.aborted)) {
+    for (let i = queue.length - 1; i >= 0; i--) {
+      const q = queue[i];
+      if (q.finished || q.abortController.signal.aborted) queue.splice(i, 1);
+    }
+    if (queue.length !== before) log(`queue drained ${before - queue.length} abandoned job(s) — ${queue.length} remaining`);
+  }
   // Webhook: request failed
   sendWebhook('request_failed', {
     account: job.account,
@@ -1121,6 +1147,13 @@ function failJob(job, error) {
   });
   job.resolveSend?.();
   job.settle?.();
+  // Release the concurrency slot now: this job may be parked inside the session
+  // lock (its own .finally can be delayed arbitrarily long behind that chain),
+  // and holding the slot would starve the queue. Idempotent — a later
+  // runWithRotation finally is a no-op.
+  job.releaseSlot?.();
+  // Last: refill freed slots now that this job has fully settled.
+  pump();
 }
 
 function sendComplete(job) {
@@ -1166,6 +1199,7 @@ function sendComplete(job) {
       } else if (ev.type === 'chunk') {
         job.firstDeltaAt = job.firstDeltaAt || Date.now();
         clearTimeout(job.softTimer); job.softTimer = null;
+        if (process.env.DQ_TRACE_CHUNK === '1') log(`[chunk] ${JSON.stringify(ev.text)}`);
         job.text += ev.text;
         const shown = job.toolFilter ? job.toolFilter.push(ev.text) : ev.text;
         if (job.stream && shown) emitDelta(job, 'text', shown);
@@ -1202,7 +1236,7 @@ function sendComplete(job) {
         const hasAnswer = !!job.text || !!(job.toolFilter?.calls?.length);
         if (!hasAnswer && job.sessionId && !job.emptyRetry) {
           job.emptyRetry = true;
-          log(`empty answer detected (text=${job.text.length}c reasoning=${job.reasoning.length}c) — retrying once (sess=${job.sessionId.slice(0, 8)})`);
+          log(`empty answer detected (text=${job.text.length}c reasoning=${job.reasoning.length}c) — retrying once on a fresh session (sess=${job.sessionId.slice(0, 8)})`);
           (async () => {
             await throttles.get(job.account).gate(job.abortController.signal);
             const sKey = `${job.account}/${job.sessionId}`;
@@ -1210,9 +1244,16 @@ function sendComplete(job) {
             if (since < CFG.sessionContGapMs) {
               await sleep(CFG.sessionContGapMs - since, job.abortController.signal);
             }
+            // Replaying into the SAME session tends to reproduce the empty
+            // answer (the web keeps returning reasoning-only for that turn).
+            // Start a clean session instead, and re-send the full transcript.
             job.text = ''; job.reasoning = ''; job.shownText = undefined; job.toolCalls = [];
             job.toolFilter = createToolStreamFilter(job.toolNames);
-            job.parentId = Number.isInteger(ev.messageId) ? ev.messageId : job.parentId;
+            job.sessionId = await newSessionViaPage(job.account);
+            job.parentId = null;
+            job.usedDelta = false;
+            job.sessionBound = false;
+            if (!job.usedDelta) rememberSession(job.account, job.prefix, job.sessionId, null);
             await sendComplete(job);
           })().catch((e) => failJob(job, e.message || e));
           return;
@@ -1308,9 +1349,23 @@ async function runJob(job) {
 function pump() {
   while (active < CFG.concurrency && queue.length) {
     const job = queue.shift();
+    // Abandoned queued jobs (client disconnected / aborted) are dropped here;
+    // they never ran, so no slot is consumed and no counter needs releasing.
     if (job.finished || job.abortController.signal.aborted) continue;
     active++;
-    runWithRotation(job).finally(() => { active--; pump(); });
+    job.slotHeld = true;
+    // Release the slot exactly once, from whichever path settles first. A job
+    // that fails while parked inside the session lock would otherwise keep its
+    // slot forever (runWithRotation's finally can be delayed behind that lock,
+    // leaving active === concurrency with an empty queue → total deadlock).
+    const release = () => {
+      if (!job.slotHeld) return;
+      job.slotHeld = false;
+      active--;
+      pump();
+    };
+    job.releaseSlot = release;
+    runWithRotation(job).finally(release);
   }
 }
 

@@ -1,3 +1,9 @@
 bridge-run.log
 bridge.log
 request-dump.jsonl
+# runtime state (per-machine, contains account keys / session mappings)
+auth.json
+accounts.json
+sessions.json
+files.json
+stats.json
