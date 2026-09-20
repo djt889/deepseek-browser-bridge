@@ -192,7 +192,7 @@
   // ---------- SSE decoding (port of stream-codec.ts) ----------
   /*__SSE_CORE__*/
   function createFrameDecoder() {
-    let buf = '', scan = 0;
+    let buf = '';
     const makeFrame = (block) => {
       let data = null;
       for (const line of block.split(/\r\n|\r|\n/)) {
@@ -205,16 +205,17 @@
     };
     const drain = (final) => {
       const frames = [];
+      // Emit only complete frames; the remainder stays buffered for the next
+      // chunk. Never re-slice consumed bytes — a delimiter split across chunks
+      // must not cause the same frame to be emitted twice.
       const re = /\r?\n\r?\n/g;
-      re.lastIndex = scan;
-      let offset = 0, m;
+      let sliceFrom = 0, m;
       while ((m = re.exec(buf)) !== null) {
-        frames.push(makeFrame(buf.slice(offset, m.index)));
-        offset = m.index + m[0].length;
+        frames.push(makeFrame(buf.slice(sliceFrom, m.index)));
+        sliceFrom = m.index + m[0].length;
       }
-      buf = buf.slice(offset);
-      scan = Math.max(0, buf.length - 3);
-      if (final && buf) { frames.push(makeFrame(buf)); buf = ''; scan = 0; }
+      buf = buf.slice(sliceFrom);
+      if (final && buf) { frames.push(makeFrame(buf)); buf = ''; }
       return frames;
     };
     return {
@@ -371,17 +372,20 @@
       const type = ROUTES[cmd.type] ? cmd.type : 'completion';
       const pow = type === 'continue' ? {} : await powHeaders(ROUTES[type], ac.signal);
       
-      // Support thinking level: true/false (boolean) OR "max"/"xhigh"/"medium"/"low" (string)
-      let thinkingEnabled;
-      if (typeof cmd.thinking === 'string') {
-        // If string, try to map to known levels; fall back to boolean true for unknown values
-        thinkingEnabled = ['max', 'xhigh', 'high', 'medium', 'low'].includes(cmd.thinking.toLowerCase()) 
-          ? cmd.thinking.toLowerCase() 
-          : true;
-      } else {
-        thinkingEnabled = !!cmd.thinking;
-      }
-      
+      // Thinking control. The web API has NO numeric level field: it exposes
+      // a boolean `thinking_enabled` plus a `model_type` (default|expert|vision).
+      // So we map requested levels onto what the protocol actually honours:
+      //   off/minimal/none  -> thinking off
+      //   anything else     -> thinking on
+      //   high/xhigh/max    -> model_type 'expert' (the web's deeper model)
+      const lvl = typeof cmd.thoughtLevel === 'string' ? cmd.thoughtLevel.toLowerCase() : null;
+      const WANT_OFF = lvl === 'off' || lvl === 'none' || lvl === 'minimal';
+      const WANT_EXPERT = lvl === 'high' || lvl === 'xhigh' || lvl === 'max';
+      const thinkingEnabled = WANT_OFF ? false : !!cmd.thinking;
+      const modelType = cmd.vision ? 'vision'
+        : (cmd.thinkExpert === true || WANT_EXPERT) ? 'expert'
+        : 'default';
+
       const base = { thinking_enabled: thinkingEnabled, search_enabled: !!cmd.search };
       let body;
       if (type === 'regenerate') {
@@ -394,7 +398,7 @@
         body = {
           chat_session_id: cmd.sessionId,
           parent_message_id: Number.isInteger(cmd.parentId) ? cmd.parentId : null,
-          model_type: cmd.vision ? 'vision' : 'default',
+          model_type: modelType,
           prompt: cmd.prompt,
           ref_file_ids: cmd.refFileIds ?? [],
           ...base,

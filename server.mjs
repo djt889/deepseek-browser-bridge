@@ -556,7 +556,7 @@ class AccountThrottle {
         jitter = Math.floor(jitter * 0.8); // also reduce variance slightly
       }
       // If failed last request → increase interval by 5s
-      else if (!this.lastOk && error) {
+      else if (!this.lastOk) {
         baseGap += 5000;
       }
       
@@ -845,6 +845,32 @@ function joinTranscript(msgs, tools) {
   return head + rest + reminder;
 }
 
+// Parse the inside of a tool tag into an arguments object. The model emits
+// either a JSON body (`<name>{"q":"x"}</name>`) or one nested tag per parameter
+// (`<name><path>p</path><content>c</content></name>`) — the latter is common for
+// multi-argument tools, so handle both instead of dumping it into _unparsed.
+function parseToolArgs(body) {
+  const s = String(body ?? '').trim();
+  if (!s) return {};
+  if (s.startsWith('{') || s.startsWith('[')) {
+    try { return JSON.parse(s); } catch { /* fall through to tag parsing */ }
+  }
+  const args = {};
+  const tagRe = /<([A-Za-z_][A-Za-z0-9_.:-]*)\s*>([\s\S]*?)<\/\1>/g;
+  let m, matched = false;
+  while ((m = tagRe.exec(s)) !== null) {
+    matched = true;
+    const key = m[1];
+    let val = m[2].trim();
+    // A parameter that itself holds JSON (arrays/objects) round-trips as JSON.
+    if ((val.startsWith('{') && val.endsWith('}')) || (val.startsWith('[') && val.endsWith(']'))) {
+      try { val = JSON.parse(val); } catch { /* keep as string */ }
+    }
+    args[key] = val;
+  }
+  return matched ? args : { _unparsed: s };
+}
+
 // Linear scanner turning model text into {content, toolCalls}, buffering
 // partial tool tags while streaming (port of deepseek-pp tool-parser semantics:
 // `<name>{json}</name>` with name in the catalog; unknown tags pass through).
@@ -880,9 +906,7 @@ function createToolStreamFilter(toolNames) {
             return emit;
           }
           const body = pending.slice(lt + complete[0].length, close).trim();
-          let args = {};
-          try { args = body ? JSON.parse(body) : {}; } catch { args = { _unparsed: body }; }
-          calls.push({ name, args });
+          calls.push({ name, args: parseToolArgs(body) });
           emit += pending.slice(pos, lt);
           pos = close + name.length + 3;
           continue;
@@ -1170,12 +1194,15 @@ function sendComplete(job) {
         }
         // Built-in tools were removed by design: ALL tool calls go back to
         // the client (standard OpenAI function calling).
-        // Empty-stream guard: DeepSeek sometimes answers a same-session
-        // follow-up with a 200 + EMPTY stream despite the cooldown. Retry
-        // once with the same prompt on the same session before giving up.
-        if (!job.text && !job.reasoning && !(job.toolFilter?.calls?.length) && job.sessionId && !job.emptyRetry) {
+        // Empty-answer guard: the web stream can end with NO visible text while
+        // still emitting reasoning (long thinking can consume the whole turn),
+        // or with a fully empty 200 stream on a same-session follow-up. Both
+        // are useless to the caller, so retry once. Reasoning alone is NOT a
+        // valid answer — require job.text (or a real tool call).
+        const hasAnswer = !!job.text || !!(job.toolFilter?.calls?.length);
+        if (!hasAnswer && job.sessionId && !job.emptyRetry) {
           job.emptyRetry = true;
-          log(`empty stream detected — retrying once (sess=${job.sessionId.slice(0, 8)})`);
+          log(`empty answer detected (text=${job.text.length}c reasoning=${job.reasoning.length}c) — retrying once (sess=${job.sessionId.slice(0, 8)})`);
           (async () => {
             await throttles.get(job.account).gate(job.abortController.signal);
             const sKey = `${job.account}/${job.sessionId}`;
@@ -1848,6 +1875,28 @@ async function processCompletion(req, res, parsed, protocol) {
   const model = String(parsed?.model ?? 'deepseek-v4.1-flash');
   const think = model.includes('nothink') ? false : model.includes('think') ? true : CFG.think;
   const search = model.includes('search');
+
+  // Thinking level: OpenAI-style clients (pi, etc.) send `reasoning_effort`;
+  // some clients use `thinking_level`/`thought_level`. Normalise to a small
+  // vocabulary. The web API only honours on/off + model_type, so these levels
+  // are a best-effort intent signal, not a native numeric depth.
+  const rawThought = parsed?.reasoning_effort
+    ?? parsed?.thinking_level
+    ?? parsed?.thought_level
+    ?? parsed?.extra?.reasoning_effort
+    ?? null;
+  const LEVEL_ALIASES = {
+    off: 'off', none: 'off', minimal: 'off', disable: 'off', disabled: 'off',
+    low: 'low',
+    medium: 'medium', mid: 'medium',
+    high: 'high', xhigh: 'xhigh', max: 'max', maximum: 'max',
+  };
+  const thoughtLevel = rawThought == null ? null
+    : (LEVEL_ALIASES[String(rawThought).toLowerCase().trim()] ?? null);
+  // off/none/minimal force thinking off; any other explicit level forces it on.
+  const thinkEffective = thoughtLevel == null ? think
+    : thoughtLevel === 'off' ? false
+    : true;
   const tools = Array.isArray(parsed?.tools) && parsed.tools.length ? parsed.tools : null;
   const preemptFlag = parsed?.dq_preempt === true;
   const toolNames = (tools ?? []).map((t) => t?.function?.name).filter(Boolean);
@@ -1894,9 +1943,9 @@ async function processCompletion(req, res, parsed, protocol) {
     created: Math.floor(Date.now() / 1000),
     model, messages, prefix, prompt, usedDelta, sessionId, parentId, account,
     sessionBound: usedDelta, reqType: special, childMessageId, targetMessageId,
-    think, search, tools, toolNames, preempt: preemptFlag,
-    // Optional: thinking level (max/xhigh/high/medium/low) - may be ignored by web UI
-    thoughtLevel: parsed?.thinking_level ?? parsed?.thought_level ?? null,
+    think: thinkEffective, search, tools, toolNames, preempt: preemptFlag,
+    // Thinking level (max/xhigh/high/medium/low) resolved from reasoning_effort
+    thoughtLevel,
     // Optional: thinking budget (may be ignored by web UI)
     thoughtBudget: parsed?.extra?.thinking_budget ?? parsed?.thought_limit ?? null,
     // Delta turns re-send history whose images already live in the session:
@@ -1974,7 +2023,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && url.pathname === '/v1/chat/completions') {
-      const parsed = JSON.parse(await readBody(req, 32 * 1024 * 1024));
+      const rawBody = await readBody(req, 32 * 1024 * 1024);
+      if (process.env.DQ_DUMP_REQUEST === '1') {
+        try { fs.appendFileSync(path.join(__dirname, 'request-dump.jsonl'), rawBody.trim() + '\n'); } catch { /* ignore */ }
+      }
+      const parsed = JSON.parse(rawBody);
       await processCompletion(req, res, parsed, 'openai');
       return;
     }

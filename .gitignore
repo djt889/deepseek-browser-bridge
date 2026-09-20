@@ -1,12 +1,3 @@
-# 运行时自动生成：含个人数据/凭据，勿提交
-auth.json
-accounts.json
-sessions.json
-files.json
-stats.json
+bridge-run.log
 bridge.log
-
-# archify 交付证据（过程文件）
-docs/*.visual-check.*
-
-node_modules/
+request-dump.jsonl
