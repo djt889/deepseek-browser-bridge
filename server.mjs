@@ -62,10 +62,29 @@ const CFG = {
   fileAuditPollMs: Number(ENV('DQ_FILE_AUDIT_POLL_MS', 3000)),                // audit poll interval
   fileCacheTtlMs: Number(ENV('DQ_FILE_CACHE_TTL_MS', 7 * 86400_000)),         // uploaded-file id cache lifetime
   autoRevive: ENV('DQ_AUTO_REVIVE', '1') === '1',                             // un-dead an account once its page is logged in again
+  // Webhook config (JSON array of URLs)
+  webhooks: (() => {
+    const raw = ENV('DQ_WEBHOOKS', '');
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch { log(`invalid DQ_WEBHOOKS JSON — ignored`); return null; }
+  })(),
 };
 
 const nowHMS = () => { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; };
 let log = (...args) => console.log(`[dq ${nowHMS()}]`, ...args);
+
+// Webhook sender (fire-and-forget with timeout)
+async function sendWebhook(event, payload) {
+  if (!CFG.webhooks || !Array.isArray(CFG.webhooks) || CFG.webhooks.length === 0) return;
+  for (const url of CFG.webhooks) {
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event, payload, at: new Date().toISOString() }),
+      signal: AbortSignal.timeout(5000), // 5s timeout per URL
+    }).catch(() => { /* ignore failed webhook delivery */ });
+  }
+}
 const sleep = (ms, signal) => delay(ms, null, { signal }).catch(() => {
   throw new Error('DQ_CLIENT_CLOSED');
 });
@@ -327,9 +346,37 @@ async function listSessionsViaPage(account) {
   return ev.sessions ?? [];
 }
 
-// First live, non-dead account with an attached page (admin helpers only).
-function liveAccountForAdmin() {
-  return accounts.find((a) => !a.dead && cdps.get(a.name)?.ws?.readyState === 1) ?? null;
+// Calculate a health score (0-100) for an account based on recent performance.
+function calculateAccountScore(th, h) {
+  // Start from perfect score and deduct based on risk factors
+  let score = 100;
+  
+  // 1. Daily usage ratio (40% weight): using too many requests per day = risky
+  const usageRatio = CFG.maxPerDay > 0 ? th.dayCount / CFG.maxPerDay : 0;
+  if (usageRatio > 0.9) score -= 25; // >90% used → dangerous
+  else if (usageRatio > 0.7) score -= 15; // >70% → caution
+  else if (usageRatio > 0.5) score -= 5; // >50% → mild
+  
+  // 2. Consecutive failures or soft throttle hits (30% weight)
+  if (th.authFailStreak >= 3) score -= 30;
+  else if (th.authFailStreak >= 1) score -= 15;
+  if (th.softThrottleHit && Date.now() - th.softThrottleTime < 600000) {
+    // within 10min of soft throttle → significant penalty
+    score -= 20;
+  } else if (th.coolUntil > Date.now()) {
+    score -= 10;
+  }
+  
+  // 3. Last error time recency (20% weight): recent errors = worse
+  // (simplified: use consecutiveSuccess instead)
+  if (th.consecutiveSuccess === 0) score -= 10; // no success streak yet
+  else if (th.consecutiveSuccess >= 5) score += 5; // bonus for good streak
+  
+  // 4. Dead/cooling state (10% weight)
+  if (th.dead) score = 0; // immediate zero
+  else if (th.coolUntil > Date.now()) score -= 5;
+  
+  return Math.max(0, Math.min(100, Math.round(score)));
 }
 
 // Web UI file attach: POST /api/v0/file/upload_file (multipart, PoW signed for
@@ -427,6 +474,10 @@ class AccountThrottle {
     this.authFailStreak = 0;
     this.dead = false;          // set after repeated auth rejections (needs re-login)
     this.coolUntil = 0;         // pow/network cooldown
+    // Smart throttling: track recent behavior pattern
+    this.requestTimes = [];     // last 20 request timestamps for smoothing
+    this.consecutiveSuccess = 0;
+    this.softThrottleHit = false;
   }
 
   parseQuiet() {
@@ -470,9 +521,43 @@ class AccountThrottle {
         continue;
       }
 
-      const need = CFG.minGapMs + Math.floor(Math.random() * CFG.jitterMs);
+      // === SMART THROTTLING: DYNAMIC INTERVAL BASED ON BEHAVIOR PATTERN ===
+      // Keep last 20 requests for smoothing
+      this.requestTimes.push(now);
+      if (this.requestTimes.length > 20) this.requestTimes.shift();
+      
+      // Calculate base gap with adaptive jitter (more natural than fixed intervals)
+      let baseGap = CFG.minGapMs;
+      let jitter = CFG.jitterMs;
+      
+      // If soft throttle hit recently → extend to 30~60 seconds
+      if (this.softThrottleHit) {
+        const timeSinceSoftThrottle = now - this.softThrottleTime;
+        if (timeSinceSoftThrottle < 600000) { // within 10min of soft throttle
+          baseGap = 30000 + Math.random() * 30000; // 30-60s
+        } else {
+          this.softThrottleHit = false; // recovered after 10min
+        }
+      }
+      // If consecutive success (>5), gradually reduce interval (simulate human acceleration)
+      else if (this.consecutiveSuccess >= 5) {
+        baseGap = Math.max(6000, baseGap - (this.consecutiveSuccess - 4) * 500); // max reduce 1s
+        jitter = Math.floor(jitter * 0.8); // also reduce variance slightly
+      }
+      // If failed last request → increase interval by 5s
+      else if (!okBefore && error) {
+        baseGap += 5000;
+      }
+      
+      const dynamicInterval = baseGap + Math.random() * jitter;
+      
       const since = now - this.lastDone;
-      if (this.lastDone && since < need) { await sleep(need - since, signal); continue; }
+      if (this.lastDone && since < dynamicInterval) { 
+        const waitTime = dynamicInterval - since;
+        log(`smart throttle: waiting ${Math.round(waitTime/1000)}s (dynamic=${Math.round(dynamicInterval/1000)}s, success=${this.consecutiveSuccess})`);
+        await sleep(waitTime, signal); 
+        continue; 
+      }
 
       this.hourWindow.push(Date.now());
       this.dayCount += 1;
@@ -482,7 +567,23 @@ class AccountThrottle {
 
   done(ok, error) {
     this.lastDone = Date.now();
-    if (ok) { this.authFailStreak = 0; return; }
+    const okBefore = ok; // keep previous success state
+    
+    if (ok) { 
+      this.authFailStreak = 0;
+      this.consecutiveSuccess += 1;
+      return; 
+    }
+    
+    // Track soft throttle hits for adaptive backoff
+    if (String(error ?? '').includes('DQ_SOFT_THROTTLED')) {
+      this.softThrottleHit = true;
+      this.softThrottleTime = Date.now();
+      this.consecutiveSuccess = 0;
+    } else {
+      this.consecutiveSuccess = 0;
+    }
+    
     const code = String(error ?? '').split(' ')[0];
     if (String(error ?? '').includes('INVALID_TARGET_PATH')) {
       this.authFailStreak = 0; // param bug, not risk-control — do not cool down
@@ -951,6 +1052,17 @@ function finishJob(job, messageId) {
   );
   recordRequest(job);
   log(`complete [${job.account}] sess=${job.sessionId.slice(0, 8)} ${job.usedDelta ? 'delta' : 'full'} msgs=${job.messages.length} in=${job.prompt.length}c out=${job.text.length}c${job.reasoning ? ` think=${job.reasoning.length}c` : ''}${job.toolCalls?.length ? ` tool_calls=${job.toolCalls.length}` : ''}`);
+  // Webhook: request completed successfully
+  sendWebhook('request_complete', {
+    account: job.account,
+    sessionId: job.sessionId.slice(0, 8),
+    mode: job.usedDelta ? 'delta' : 'full',
+    promptChars: job.prompt.length,
+    outputChars: job.text.length,
+    reasoningChars: job.reasoning?.length ?? 0,
+    tools: job.toolCalls?.length ?? 0,
+    elapsedMs: job.roundDoneAt && job.startedAt ? job.roundDoneAt - job.startedAt : null,
+  });
   job.resolveSend?.();
   job.settle?.();
 }
@@ -966,6 +1078,12 @@ function failJob(job, error) {
   throttles.get(job.account)?.done(false, job.error);
   if (job.startedAt) recordRequest(job);
   log(`fail [${job.account ?? '?'}] sess=${String(job.sessionId ?? '').slice(0, 8)} ${job.error}`);
+  // Webhook: request failed
+  sendWebhook('request_failed', {
+    account: job.account,
+    sessionId: String(job.sessionId ?? '').slice(0, 8),
+    error: job.error,
+  });
   job.resolveSend?.();
   job.settle?.();
 }
@@ -1519,6 +1637,44 @@ const fileObj = (dsId, rec) => ({
   purpose: 'assistants',
 });
 
+// Calculate a health score (0-100) for an account based on recent performance.
+function calculateAccountScore(th, h) {
+  // Start from perfect score and deduct based on risk factors
+  let score = 100;
+  
+  // 1. Daily usage ratio (40% weight): using too many requests per day = risky
+  const usageRatio = CFG.maxPerDay > 0 ? th.dayCount / CFG.maxPerDay : 0;
+  if (usageRatio > 0.9) score -= 25; // >90% used → dangerous
+  else if (usageRatio > 0.7) score -= 15; // >70% → caution
+  else if (usageRatio > 0.5) score -= 5; // >50% → mild
+  
+  // 2. Consecutive failures or soft throttle hits (30% weight)
+  if (th.authFailStreak >= 3) score -= 30;
+  else if (th.authFailStreak >= 1) score -= 15;
+  if (th.softThrottleHit && Date.now() - th.softThrottleTime < 600000) {
+    // within 10min of soft throttle → significant penalty
+    score -= 20;
+  } else if (th.coolUntil > Date.now()) {
+    score -= 10;
+  }
+  
+  // 3. Last error time recency (20% weight): recent errors = worse
+  // (simplified: use consecutiveSuccess instead)
+  if (th.consecutiveSuccess === 0) score -= 10; // no success streak yet
+  else if (th.consecutiveSuccess >= 5) score += 5; // bonus for good streak
+  
+  // 4. Dead/cooling state (10% weight)
+  if (th.dead) score = 0; // immediate zero
+  else if (th.coolUntil > Date.now()) score -= 5;
+  
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+// First live, non-dead account with an attached page (admin helpers only).
+function liveAccountForAdmin() {
+  return accounts.find((a) => !throttles.get(a.name).dead && cdps.get(a.name)?.ws?.readyState === 1) ?? null;
+}
+
 let healthCache = { at: 0, value: null };
 async function getHealth() {
   if (Date.now() - healthCache.at < 10000 && healthCache.value) return healthCache.value;
@@ -1537,10 +1693,12 @@ async function getHealth() {
         th.coolUntil = 0;
         log(`account ${a.name} auto-revived (page logged in again)`);
       }
+      const score = calculateAccountScore(th, { dayCount: th.dayCount });
       return {
         name: a.name, displayName: a.displayName ?? null, cdpPort: a.cdpPort, dead: th.dead,
         loggedIn: !!st.loggedIn, page: st.url,
         dayCount: th.dayCount, lastDone: th.lastDone,
+        healthScore: score,
       };
     } catch (e) {
       return { name: a.name, cdpPort: a.cdpPort, dead: th.dead, loggedIn: false, error: String(e.message || e) };

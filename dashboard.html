@@ -60,6 +60,10 @@
   .acct-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(272px, 1fr)); gap: 12px; }
   .alert { background: #2a1a10; border: 1px solid #5a3a1a; border-left: 3px solid var(--warn); color: #e8c88a; border-radius: 8px; padding: 9px 13px; font-size: 13px; margin-bottom: 10px; }
   .acct .hint { background: #171208; border: 1px solid #3d2e0d; color: #d9b86a; border-radius: 6px; padding: 6px 10px; font-size: 12px; margin-top: 8px; }
+  .acct .health-score { font-size: 13px; padding: 6px 10px; border-radius: 6px; margin-top: 8px; display: inline-block; font-weight: 600; }
+  .acct .health-score.score-high { background: rgba(46, 213, 115, 0.2); color: #2ed573; }
+  .acct .health-score.score-medium { background: rgba(255, 193, 7, 0.2); color: #ffc107; }
+  .acct .health-score.score-low { background: rgba(255, 82, 82, 0.2); color: #ff5252; }
   .acct { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 13px 15px; }
   .acct .name { font-weight: 600; color: #e8edf4; display: flex; align-items: center; gap: 8px; }
   .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
@@ -280,9 +284,20 @@ async function refresh(force) {
       : a.loggedIn ? '<span class="pill g">正常</span>' : '<span class="pill n">未登录</span>';
     const dot = a.dead ? 'bad' : a.loggedIn ? 'ok' : 'warn';
     const title = esc(a.displayName || a.name);
+    
+    // Health score display with color coding
+    const score = a.healthScore ?? null;
+    let scoreHtml = '';
+    if (score !== null) {
+      const scoreClass = score >= 80 ? 'score-high' : score >= 50 ? 'score-medium' : 'score-low';
+      const scoreEmoji = score >= 80 ? '✅' : score >= 50 ? '⚠️' : '❌';
+      const scoreHint = score >= 80 ? '' : score >= 50 ? '建议降频观察' : '暂停使用或换号';
+      scoreHtml = `<div class="health-score ${scoreClass}"><b>健康度:</b> ${score}分 ${scoreEmoji}</div>`;
+    }
+    
     const hint = (!a.loggedIn || a.dead)
       ? `<div class="hint">⚠ 请在该号的浏览器窗口重新登录，登录后自动恢复参与调度${a.dead && a.loggedIn ? '（检测到登录态，下次检查自动复活）' : ''}</div>` : '';
-    return `<div class="acct"><div class="name"><span class="dot ${dot}"></span>${title} <span class="kv">:${a.cdpPort}</span> ${st}</div>${hint}
+    return `<div class="acct"><div class="name"><span class="dot ${dot}"></span>${title} <span class="kv">:${a.cdpPort}</span> ${st}</div>${scoreHtml}${hint}
       <dl><dt>页面</dt><dd>${esc((a.page || a.error || '').slice(0, 40))}</dd>
       <dt>今日请求</dt><dd>${a.dayCount ?? 0}</dd>
       <dt>上次使用</dt><dd>${a.lastDone ? new Date(a.lastDone).toLocaleTimeString() : '-'}</dd>
