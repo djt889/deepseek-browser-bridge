@@ -370,7 +370,19 @@
       // cmd.type: 'completion' (default) | 'regenerate' | 'editMessage' | 'continue'
       const type = ROUTES[cmd.type] ? cmd.type : 'completion';
       const pow = type === 'continue' ? {} : await powHeaders(ROUTES[type], ac.signal);
-      const base = { thinking_enabled: !!cmd.thinking, search_enabled: !!cmd.search };
+      
+      // Support thinking level: true/false (boolean) OR "max"/"xhigh"/"medium"/"low" (string)
+      let thinkingEnabled;
+      if (typeof cmd.thinking === 'string') {
+        // If string, try to map to known levels; fall back to boolean true for unknown values
+        thinkingEnabled = ['max', 'xhigh', 'high', 'medium', 'low'].includes(cmd.thinking.toLowerCase()) 
+          ? cmd.thinking.toLowerCase() 
+          : true;
+      } else {
+        thinkingEnabled = !!cmd.thinking;
+      }
+      
+      const base = { thinking_enabled: thinkingEnabled, search_enabled: !!cmd.search };
       let body;
       if (type === 'regenerate') {
         body = { chat_session_id: cmd.sessionId, child_message_id: cmd.childMessageId, ...base };

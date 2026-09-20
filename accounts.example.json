@@ -1,4 +1,4 @@
 [
-  { "name": "acc1", "cdpPort": 9222 },
+  { "name": "acc1", "cdpPort": 9222, "proxyUrl": "http://proxy1.com:8080" },
   { "name": "acc2", "cdpPort": 9223 }
 ]

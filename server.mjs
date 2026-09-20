@@ -62,16 +62,56 @@ const CFG = {
   fileAuditPollMs: Number(ENV('DQ_FILE_AUDIT_POLL_MS', 3000)),                // audit poll interval
   fileCacheTtlMs: Number(ENV('DQ_FILE_CACHE_TTL_MS', 7 * 86400_000)),         // uploaded-file id cache lifetime
   autoRevive: ENV('DQ_AUTO_REVIVE', '1') === '1',                             // un-dead an account once its page is logged in again
-  // Webhook config (JSON array of URLs)
-  webhooks: (() => {
-    const raw = ENV('DQ_WEBHOOKS', '');
-    if (!raw) return null;
-    try { return JSON.parse(raw); } catch { log(`invalid DQ_WEBHOOKS JSON — ignored`); return null; }
-  })(),
 };
 
 const nowHMS = () => { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; };
 let log = (...args) => console.log(`[dq ${nowHMS()}]`, ...args);
+
+// Proxy pool rotation management per account
+class ProxyPool {
+  constructor(accountsList) {
+    // Load proxy config from accounts.json + env var DQ_PROXIES
+    this.pools = new Map();
+    for (const acc of accountsList) {
+      const rawProxies = ENV(`DQ_PROXY_${acc.name}`, '');
+      let proxies = [];
+      if (rawProxies) {
+        try { proxies = JSON.parse(rawProxies); } catch { /* ignore */ }
+      } else if (ENV('DQ_DEFAULT_PROXY')) {
+        proxies = [ENV('DQ_DEFAULT_PROXY')]; // single default for all accounts
+      }
+      this.pools.set(acc.name, {
+        list: proxies.map(u => ({ url: u, failCount: 0, lastUsed: 0 })),
+        currentIndex: 0,
+        mode: ENV('DQ_PROXY_ROTATION', 'round-robin'), // round-robin | random | per-request
+      });
+    }
+  }
+  
+  getAvailable(accountName) {
+    const pool = this.pools.get(accountName);
+    if (!pool || pool.list.length === 0) return null;
+    
+    // Round-robin or random selection
+    let idx;
+    if (pool.mode === 'random') {
+      idx = Math.floor(Math.random() * pool.list.length);
+    } else if (pool.mode === 'per-request') {
+      // Always pick best available (lowest failCount)
+      idx = pool.list.reduce((best, cur, i) => 
+        cur.failCount < pool.list[best].failCount ? i : best, 0);
+    } else {
+      idx = pool.currentIndex % pool.list.length;
+      pool.currentIndex++;
+    }
+    
+    const entry = pool.list[idx];
+    entry.lastUsed = Date.now();
+    return entry.url;
+  }
+}
+
+const proxyPools = new ProxyPool(accounts);
 
 // Webhook sender (fire-and-forget with timeout)
 async function sendWebhook(event, payload) {
@@ -133,13 +173,24 @@ function launchChrome(account) {
   if (!chrome) { log(`account ${account.name}: chrome.exe not found, start it manually on port ${account.cdpPort}`); return; }
   fs.mkdirSync(account.profileDir, { recursive: true });
   const pos = CFG.show ? '--window-position=60,60' : '--window-position=-32000,-32000';
-  const child = spawn(chrome, [
+  const args = [
     `--remote-debugging-port=${account.cdpPort}`,
     `--user-data-dir=${account.profileDir}`,
     '--no-first-run', '--no-default-browser-check',
     '--window-size=1200,900', pos,
     'https://chat.deepseek.com/',
-  ], { detached: true, stdio: 'ignore' });
+  ];
+  
+  // Add proxy argument if configured
+  const proxyUrl = account.proxyUrl || ENV('DQ_DEFAULT_PROXY');
+  if (proxyUrl) {
+    args.unshift('--ignore-certificate-errors');
+    args.unshift('--allow-insecure-localhost');
+    args.push(`--proxy-server=${proxyUrl}`);
+    log(`account ${account.name}: will use proxy ${proxyUrl}`);
+  }
+  
+  const child = spawn(chrome, args, { detached: true, stdio: 'ignore' });
   child.unref();
   log(`account ${account.name}: launched chrome (port ${account.cdpPort}, profile ${account.profileDir}${CFG.show ? ', on-screen' : ', off-screen'})`);
 }
@@ -1210,10 +1261,12 @@ function sendComplete(job) {
         parentId: job.parentId,
         childMessageId: job.childMessageId,
         messageId: job.targetMessageId,
-        thinking: job.think,
+        thinking: job.think, // Supports boolean or string level ("max", "xhigh", etc.)
         search: job.search,
         refFileIds: job.refFileIds ?? [],
         vision: job.vision === true,
+        // Optional: pass through thought budget (may be ignored by page)
+        thoughtBudget: job.thoughtBudget ?? null,
       }).catch((e) => failJob(job, e.message || e));
     })();
   });
@@ -1637,39 +1690,6 @@ const fileObj = (dsId, rec) => ({
   purpose: 'assistants',
 });
 
-// Calculate a health score (0-100) for an account based on recent performance.
-function calculateAccountScore(th, h) {
-  // Start from perfect score and deduct based on risk factors
-  let score = 100;
-  
-  // 1. Daily usage ratio (40% weight): using too many requests per day = risky
-  const usageRatio = CFG.maxPerDay > 0 ? th.dayCount / CFG.maxPerDay : 0;
-  if (usageRatio > 0.9) score -= 25; // >90% used → dangerous
-  else if (usageRatio > 0.7) score -= 15; // >70% → caution
-  else if (usageRatio > 0.5) score -= 5; // >50% → mild
-  
-  // 2. Consecutive failures or soft throttle hits (30% weight)
-  if (th.authFailStreak >= 3) score -= 30;
-  else if (th.authFailStreak >= 1) score -= 15;
-  if (th.softThrottleHit && Date.now() - th.softThrottleTime < 600000) {
-    // within 10min of soft throttle → significant penalty
-    score -= 20;
-  } else if (th.coolUntil > Date.now()) {
-    score -= 10;
-  }
-  
-  // 3. Last error time recency (20% weight): recent errors = worse
-  // (simplified: use consecutiveSuccess instead)
-  if (th.consecutiveSuccess === 0) score -= 10; // no success streak yet
-  else if (th.consecutiveSuccess >= 5) score += 5; // bonus for good streak
-  
-  // 4. Dead/cooling state (10% weight)
-  if (th.dead) score = 0; // immediate zero
-  else if (th.coolUntil > Date.now()) score -= 5;
-  
-  return Math.max(0, Math.min(100, Math.round(score)));
-}
-
 // First live, non-dead account with an attached page (admin helpers only).
 function liveAccountForAdmin() {
   return accounts.find((a) => !throttles.get(a.name).dead && cdps.get(a.name)?.ws?.readyState === 1) ?? null;
@@ -1913,6 +1933,10 @@ async function processCompletion(req, res, parsed, protocol) {
     model, messages, prefix, prompt, usedDelta, sessionId, parentId, account,
     sessionBound: usedDelta, reqType: special, childMessageId, targetMessageId,
     think, search, tools, toolNames, preempt: preemptFlag,
+    // Optional: thinking level (max/xhigh/high/medium/low) - may be ignored by web UI
+    thoughtLevel: parsed?.thinking_level ?? parsed?.thought_level ?? null,
+    // Optional: thinking budget (may be ignored by web UI)
+    thoughtBudget: parsed?.extra?.thinking_budget ?? parsed?.thought_limit ?? null,
     // Delta turns re-send history whose images already live in the session:
     // reference only attachments from the NEW (last) message. Full turns
     // reference everything in the transcript.
