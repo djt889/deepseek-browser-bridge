@@ -198,8 +198,8 @@
     {
       "id": "throttle",
       "type": "security",
-      "label": "账号级并发槽 + 速率闸门",
-      "sublabel": "并发 3/号 · 90/时 · 500/天",
+      "label": "账号级串行闸门",
+      "sublabel": "同号串行 · 90/时 · 500/天",
       "pos": [
         620,
         430

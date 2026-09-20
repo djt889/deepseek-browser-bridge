@@ -34,17 +34,19 @@ const CFG = {
   port: Number(ENV('DQ_PORT', 39751)),
   concurrency: Math.max(1, Number(ENV('DQ_CONCURRENCY', 6))),
   queueMax: Math.max(1, Number(ENV('DQ_QUEUE_MAX', 32))),
-  // Requests that may be genuinely in flight at once, PER ACCOUNT. Total real
-  // parallelism = live_accounts x perAccountConcurrency (capped by the global
-  // `concurrency`). Replaces the old "wait 8-12s after the previous request
-  // finished" gate, which serialised everything to one request at a time.
-  perAccountConcurrency: Math.max(1, Number(ENV('DQ_PER_ACCOUNT_CONCURRENCY', 3))),
-  // Minimum spacing between request STARTS on one account. Purely anti-burst:
-  // starts are staggered so a batch of N does not fire in the same millisecond
-  // (a perfect simultaneous burst is a much stronger machine signal than N
-  // requests a second or two apart). Does NOT wait for completion — requests
-  // still overlap and run concurrently.
-  startStaggerMs: Math.max(0, Number(ENV('DQ_START_STAGGER_MS', 1500))),
+  // Requests in flight at once, PER ACCOUNT. Measured (2026-09-21): DeepSeek
+  // serves ONE generation at a time per account — firing several at once does
+  // not increase throughput, it makes every request slower. Same 6 requests:
+  //   sequential: 6s wall, 3s median, completions 1s apart
+  //   6 in flight: 170s wall, 80s median, completions 40s apart
+  // So the default is 1 (strict per-account serialisation) and real parallelism
+  // comes from having MORE ACCOUNTS, not more slots per account. Raising this
+  // is possible but measurably counter-productive on a single account.
+  perAccountConcurrency: Math.max(1, Number(ENV('DQ_PER_ACCOUNT_CONCURRENCY', 1))),
+  // Minimum spacing between request STARTS on one account. Kept small mainly to
+  // avoid a perfectly simultaneous burst; with perAccountConcurrency=1 the
+  // request itself is the pacing, so this barely matters.
+  startStaggerMs: Math.max(0, Number(ENV('DQ_START_STAGGER_MS', 500))),
   // Kept for backward compatibility: when > 0, additionally enforce the old
   // completed-then-gap pacing (set DQ_MIN_GAP_MS to re-enable serial pacing).
   minGapMs: Math.max(0, Number(ENV('DQ_MIN_GAP_MS', 0))),
@@ -527,9 +529,13 @@ class AccountThrottle {
     this.softThrottleTime = 0;
   }
 
-  // Backing off after a soft-throttle hit: one request at a time, widely spaced.
+  // Backing off after an empty stream: hold one request at a time and give the
+  // account a short rest, then resume. Deliberately brief — the earlier
+  // 30-60s-for-10-minutes version turned a single empty stream into a
+  // 10-minute slow path (every request 40-50s apart), which is far worse for
+  // the user than the hiccup it was reacting to.
   backingOff() {
-    return this.softThrottleHit && Date.now() - this.softThrottleTime < 600000;
+    return this.softThrottleHit && Date.now() - this.softThrottleTime < 60000;
   }
 
   // Slots actually usable right now (a backing-off account drops to 1).
@@ -537,9 +543,9 @@ class AccountThrottle {
     return this.backingOff() ? 1 : CFG.perAccountConcurrency;
   }
 
-  // Minimum spacing between starts (widened while backing off).
+  // Minimum spacing between starts (a modest rest while backing off).
   effectiveStagger() {
-    return this.backingOff() ? 30000 + Math.random() * 30000 : CFG.startStaggerMs;
+    return this.backingOff() ? 5000 : CFG.startStaggerMs;
   }
 
   parseQuiet() {
@@ -635,6 +641,7 @@ class AccountThrottle {
     if (ok) { 
       this.authFailStreak = 0;
       this.consecutiveSuccess += 1;
+      this.emptyStreak = 0;
       return; 
     }
     
@@ -1420,19 +1427,26 @@ function sendComplete(job) {
         const hasAnswer = !!job.text || !!(job.toolFilter?.calls?.length);
         if (!hasAnswer && job.sessionId && !job.emptyRetry) {
           job.emptyRetry = true;
-          // A FULLY empty stream (no text AND no reasoning) is not a model
-          // non-answer — it is the web API's silent refusal, the same signal as
-          // a soft throttle, and it shows up when too many generations run at
-          // once on one account. Fail the account into back-off (1 slot + wide
-          // stagger) so the burst stops before it escalates to a real cooldown.
+          // A FULLY empty stream (no text AND no reasoning) is the web API's
+          // silent refusal rather than a model non-answer. It happens
+          // intermittently even at concurrency 1, so a single occurrence must
+          // NOT arm a long cooldown — that would punish normal use. Only when
+          // it repeats on this account do we treat it as pressure and rest.
           if (!job.text && !job.reasoning) {
             const th = throttles.get(job.account);
-            if (th && !th.backingOff()) {
-              th.softThrottleHit = true;
-              th.softThrottleTime = Date.now();
+            if (th) {
+              th.emptyStreak = (th.emptyStreak ?? 0) + 1;
               th.consecutiveSuccess = 0;
-              log(`account ${job.account}: empty stream (no text, no reasoning) — backing off to 1 slot for 10min`);
+              if (th.emptyStreak >= 3 && !th.backingOff()) {
+                th.softThrottleHit = true;
+                th.softThrottleTime = Date.now();
+                log(`account ${job.account}: ${th.emptyStreak} consecutive empty streams — resting 60s at 1 request`);
+              }
             }
+          } else {
+            // A reasoning-only turn is a model quirk, not risk-control pressure.
+            const th = throttles.get(job.account);
+            if (th) th.emptyStreak = 0;
           }
           log(`empty answer detected (text=${job.text.length}c reasoning=${job.reasoning.length}c) — retrying once on a fresh session (sess=${job.sessionId.slice(0, 8)})`);
           (async () => {
@@ -1451,13 +1465,8 @@ function sendComplete(job) {
             job.parentId = null;
             job.usedDelta = false;
             job.sessionBound = false;
-            // Thinking that consumed the whole turn (reasoning present, no
-            // answer and no tool call) reproduces on retry if thinking stays
-            // on — the model just thinks again. Force a direct answer.
-            if (job.think && job.reasoning) {
-              job.think = false;
-              log(`retry: thinking disabled for this round (previous turn reasoned without answering)`);
-            }
+            // Thinking is intentionally left as requested: it measurably
+            // improves tool-call adherence, so the retry keeps it on.
             if (!job.usedDelta) rememberSession(job.account, job.prefix, job.sessionId, null);
             await sendComplete(job);
           })().catch((e) => failJob(job, e.message || e));
