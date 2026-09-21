@@ -306,6 +306,30 @@ class Cdp {
     return res.result?.value;
   }
 
+  // Bring this account's Chrome window back on screen for login. Chrome
+  // launched with --window-position=-32000,-32000 comes up MINIMIZED, and
+  // re-running the launcher does nothing because Chrome reuses the existing
+  // process and ignores the new flags. So drive the live window over CDP.
+  //
+  // The order matters: while the window is minimized, setWindowBounds with
+  // left/top is ignored, so restore to 'normal' FIRST, then place it, then
+  // bring the tab to the front. Verified to hold (a minimized window that is
+  // only moved keeps snapping back to minimized).
+  async surface() {
+    await this.ensureConnected();
+    const w = await this.send('Browser.getWindowForTarget');
+    const windowId = w?.windowId;
+    if (windowId == null) throw new Error('DQ_NO_WINDOW');
+    await this.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
+    await this.send('Browser.setWindowBounds', {
+      windowId, bounds: { left: 100, top: 80, width: 1200, height: 880 },
+    });
+    await this.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
+    await this.send('Page.bringToFront').catch(() => {});
+    const after = await this.send('Browser.getWindowBounds', { windowId }).catch(() => null);
+    return after?.bounds ?? null;
+  }
+
   async cmd(obj) {
     await this.ensureConnected();
     const alive = await this.evaluate('window.__dqBridge === true').catch(() => false);
@@ -2493,20 +2517,40 @@ const server = http.createServer(async (req, res) => {
         next.push({ name, cdpPort, profileDir: account.profileDir });
         fs.writeFileSync(file, JSON.stringify(next, null, 2));
       } catch { /* keep runtime-only if the fs refuses */ }
-      launchChrome(account);
+      launchChrome(account, true);
+      // Chrome needs a moment before its window can be addressed over CDP;
+      // surface it so the login page is actually visible on screen.
+      const cdp = cdps.get(name);
+      for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        try { await cdp.surface(); break; } catch { /* not up yet */ }
+      }
       log(`account ${name}: added via dashboard (port ${cdpPort}) — login in the opened Chrome window`);
       return sendJson(res, 200, { ok: true, name, cdpPort, loginUrl: 'https://chat.deepseek.com/' });
     }
 
-    // Re-show an account's Chrome window for (re-)login: the off-screen
-    // window can't be repositioned reliably, so relaunch the profile on
-    // screen; Chrome reuses the same user-data-dir, so cookies survive.
+    // Bring an account's Chrome window on screen for (re-)login. The window is
+    // launched off-screen (and Chrome ends up with it minimized); relaunching
+    // does nothing because Chrome reuses the running process, so move the real
+    // window over CDP instead.
     if (req.method === 'POST' && url.pathname.startsWith('/admin/accounts/show/')) {
       const name = decodeURIComponent(url.pathname.split('/').pop());
       const account = accounts.find((a) => a.name === name);
       if (!account) return sendError(res, 404, 'DQ_NO_SUCH_ACCOUNT');
-      launchChrome(account, true);
-      return sendJson(res, 200, { ok: true, name, note: 'login in the opened window, then refresh' });
+      const cdp = cdps.get(name);
+      let surfaced = false;
+      try {
+        await cdp?.surface();
+        surfaced = true;
+      } catch (e) {
+        // No live browser to move (never launched, or closed): start it visibly.
+        log(`account ${name}: could not surface window (${e.message}) — launching on screen`);
+        launchChrome(account, true);
+      }
+      return sendJson(res, 200, {
+        ok: true, name, surfaced,
+        note: surfaced ? 'window moved on screen — log in there, then refresh' : 'launching window on screen',
+      });
     }
 
     if (req.method === 'GET' && url.pathname === '/dashboard') {
