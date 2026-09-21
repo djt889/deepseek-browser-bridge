@@ -217,6 +217,26 @@ class Cdp {
     return created.webSocketDebuggerUrl;
   }
 
+  // Best-effort shutdown used when removing an account: close the page over
+  // CDP (which takes the single-purpose Chrome window with it) and drop the
+  // socket. Never throws into the caller.
+  async close() {
+    const prev = this.ws;
+    this.ws = null;
+    if (prev) {
+      try { prev.onmessage = null; prev.onclose = null; prev.onerror = null; prev.close(); } catch { /* already closed */ }
+    }
+    try {
+      const list = await fetchJson(`http://127.0.0.1:${this.account.cdpPort}/json/list`);
+      for (const t of list) {
+        if (t.type === 'page' && /^https:\/\/chat\.deepseek\.com/.test(t.url)) {
+          await fetchJson(`http://127.0.0.1:${this.account.cdpPort}/json/close/${t.id}`).catch(() => {});
+        }
+      }
+    } catch { /* browser already gone */ }
+    this.injected = false;
+  }
+
   async connect() {
     const wsUrl = await this.findPageWsUrl();
     // Drop any previous socket first: a stale, still-open connection keeps
@@ -2551,6 +2571,39 @@ const server = http.createServer(async (req, res) => {
         ok: true, name, surfaced,
         note: surfaced ? 'window moved on screen — log in there, then refresh' : 'launching window on screen',
       });
+    }
+
+    // Remove an account: stops scheduling it immediately, closes its Chrome
+    // window via CDP, and drops it from accounts.json. The last account cannot
+    // be removed (the bridge needs at least one). In-flight jobs on that
+    // account are allowed to finish; it just stops taking NEW work. Profile
+    // dir is kept on disk so re-adding the same name restores the login.
+    if (req.method === 'POST' && url.pathname.startsWith('/admin/accounts/delete/')) {
+      const name = decodeURIComponent(url.pathname.split('/').pop());
+      const idx = accounts.findIndex((a) => a.name === name);
+      if (idx < 0) return sendError(res, 404, 'DQ_NO_SUCH_ACCOUNT');
+      if (accounts.length <= 1) return sendError(res, 400, 'DQ_LAST_ACCOUNT — at least one account must remain');
+      const [removed] = accounts.splice(idx, 1);
+      const th = throttles.get(name);
+      if (th) th.dead = true; // stop gate() from admitting new work
+      throttles.delete(name);
+      const cdp = cdps.get(name);
+      try { await cdp?.close(); } catch { /* browser may already be gone */ }
+      cdps.delete(name);
+      try {
+        const file = path.join(__dirname, 'accounts.json');
+        const disk = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (Array.isArray(disk)) {
+          fs.writeFileSync(file, JSON.stringify(disk.filter((a) => a.name !== name), null, 2));
+        }
+      } catch { /* keep going; accounts.json rebuilt on next restart */ }
+      sessions.delete(name); // session mappings are keyed by account at top level
+      for (const [gk, it] of [...deleteQueue]) {
+        if (it.account === name) deleteQueue.delete(gk); // retire sweep skips dead accounts anyway
+      }
+      saveSessions();
+      log(`account ${name}: removed via dashboard`);
+      return sendJson(res, 200, { ok: true, name, note: 'profile dir kept — re-adding the same name restores its login' });
     }
 
     if (req.method === 'GET' && url.pathname === '/dashboard') {

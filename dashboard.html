@@ -219,6 +219,12 @@ async function showAcc(name) {
     ? `已弹出 ${name} 的 Chrome 窗口：登录后点「手动刷新」，账号自动恢复参与调度`
     : (r.data?.error || '失败');
 }
+async function delAcc(name) {
+  if (!confirm(`确认删除账号 ${name}？其 Chrome 窗口会关闭并停止接单（登录资料保留，重新添加同名账号可恢复）。`)) return;
+  const r = await jpost(`/admin/accounts/delete/${encodeURIComponent(name)}`);
+  document.getElementById('addMsg').textContent = r.status === 200 ? `账号 ${name} 已删除` : (r.data?.error?.message || r.data?.error || '失败');
+  refresh(true);
+}
 async function loadKeys() {
   try {
     const r = await jget('/admin/keys');
@@ -321,7 +327,7 @@ async function refresh(force) {
       <dt>今日请求</dt><dd>${a.dayCount ?? 0}</dd>
       <dt>上次使用</dt><dd>${a.lastDone ? new Date(a.lastDone).toLocaleTimeString() : '-'}</dd>
       <dt>会话映射</dt><dd>${(s.accStats || []).find((x) => x.name === a.name)?.sessions ?? 0}</dd>
-      <dt>操作</dt><dd><button style="padding:2px 10px" onclick="showAcc('${esc(a.name)}')">打开窗口登录</button></dd></dl></div>`;
+      <dt>操作</dt><dd><button style="padding:2px 10px" onclick="showAcc('${esc(a.name)}')">打开窗口登录</button> <button style="padding:2px 10px;color:var(--bad);border-color:#5a3030" onclick="delAcc('${esc(a.name)}')">删除</button></dd></dl></div>`;
   }).join('');
 
   const softHits = (s.recent || []).filter((r) => r.err && String(r.err).startsWith('DQ_SOFT_THROTTLED')).length;
