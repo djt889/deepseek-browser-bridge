@@ -49,30 +49,42 @@
 |---|---|
 | **延迟与吞吐低于官方 API** | 请求过一层真实浏览器（CDP 往返 + 页面 fetch），首 token 延迟更高。**同账号无并行收益**：实测同样 6 个请求，串行 6 秒完成，6 路并发反而要 170 秒（DeepSeek 服务端同账号内互相阻塞，完成间隔从 1 秒拉到 40 秒）。真并行只能靠多账号（并行度 = 账号数），已用 `DQ_PER_ACCOUNT_CONCURRENCY` 默认 1 锁定串行 |
 | **官方风控无法技术绕过** | 短时间高频会触发软限流，恢复可达数小时且期间只能干等；继续猛打会升级到强制下线。桥会主动识别：**连续 3 次完全空流**（无正文无思考）才判定压力，让该账号休息 60 秒（单次空流属偶发，自动重试即可，不会拖慢正常使用）。只能靠节流预防，没有事后补救手段 |
-| **工具调用遵循性弱** | 解析层已加固（非流式重复、同名标签截断、markdown/畸形 JSON 均已修复）。剩余风险是**模型遵循性**：46 项离线解析测试全通过、用 pi 真实请求（42 个工具）直连实测遵循率 6/6；但在多子代理并发 + 超大上下文（17 万字符）下，模型仍可能用文字描述代替真实调用（实测偶发 1/3 失败）。缓解：保持思考开启、把任务写明确、重试 |
+| **工具调用遵循性弱** | 解析层已加固（非流式重复、同名标签截断、markdown/畸形 JSON 均已修复）。剩余风险是**模型遵循性**：35 项离线测试全通过、用 pi 真实请求（42 个工具）直连实测遵循率 6/6；但在多子代理并发 + 超大上下文（17 万字符）下，模型仍可能用文字描述代替真实调用（实测偶发 1/3 失败）。缓解：保持思考开启、把任务写明确、重试 |
 | **每号一个常驻 Chrome** | 每个账号一个真实 Chrome 实例，各占数百 MB 内存常驻；不用 headless 是防封的必要取舍，资源紧张的环境不合适 |
 | **Windows + 桌面会话** | 只在 Windows + Chrome 实测；headed 静默窗口依赖桌面会话，无显示器的纯服务器部署需自行改造（本项目拒绝 headless，这是设计立场不是疏漏） |
-| **登录态需人工维护** | 登录过期或被强制下线后，需要人工重新登录一次（桥会自动检测并在面板提示，不会用坏号硬打） |
+| **登录态需人工维护** | 登录过期或被强制下线后需重新登录：桥会自动检测并在面板告警（不会用坏号硬打），面板上点该号的「打开窗口登录」即可重登，登录后自动恢复调度 |
 
 ## 快速开始
 
 要求：Windows + Node ≥ 22 + Chrome（自动探测），DeepSeek 账号一个或几个（建议 2~4 个自己注册的号，不要批量）。
 
 ```cmd
-:: 1. 在 server.mjs 同目录建 accounts.json（每号一项，端口不冲突即可；可从 accounts.example.json 复制）
-::    [{"name":"acc1","cdpPort":9222}]
-::    profileDir 可省略（默认 %LOCALAPPDATA%\dq-bridge-profile-<name>）
-
-:: 2. 启动桥（自动为每个账号拉起静默 Chrome；首次启动自动生成 auth.json，含随机 API Key）
+:: 1. 启动桥（首次启动自动生成 auth.json，含随机 API Key；单账号模式无需任何配置文件）
 node server.mjs
 
-:: 3. 首次登录：窗口放屏幕上启动，登录一次后永久保存在该号 profile
-node server.mjs --show          :: 所有 Chrome 窗口显示在屏幕（登录完 Ctrl+C 重启即可）
-:: 或单号手工模式：start-chrome.cmd show
+:: 2. 打开控制台 http://127.0.0.1:39751/dashboard （密码见启动日志 / auth.json），在「号池」里：
+::    输入账号名 → 点「＋ 新增账号」→ 弹出的 Chrome 窗口里登录 DeepSeek → 完成
+::    （账号自动写入 accounts.json 并立即参与调度，无需重启；已有账号掉线时点卡片上的「打开窗口登录」重登）
 
-:: 4. 验证
+:: 3. 验证
 curl http://127.0.0.1:39751/health
 ```
+
+> 💡 **加账号 = 加并行**。同一账号同一时刻只跑一个请求（实测并发反而更慢，见下文），所以真并行度 = 账号数。想同时跑 3 个子代理，就加 3 个号。
+
+<details>
+<summary>命令行方式（不用 Dashboard，适合脚本化部署）</summary>
+
+```cmd
+:: 建 accounts.json（每号一项，端口不冲突即可；可从 accounts.example.json 复制）
+::   [{"name":"acc1","cdpPort":9222}]
+::   profileDir 可省略（默认 %LOCALAPPDATA%\dq-bridge-profile-<name>）
+
+:: 首次登录：窗口放屏幕上启动，登录一次后永久保存在该号 profile
+node server.mjs --show          :: 所有 Chrome 窗口显示在屏幕（登录完 Ctrl+C 重启即可）
+:: 或单号手工模式：start-chrome.cmd show
+```
+</details>
 
 `/health` 逐账号返回 `loggedIn`/`dead`/`dayCount`。Chrome 未启动时桥自动拉起；端口被占用则复用现有实例。首次启动的 API Key 与面板密码打印在 `bridge.log`，也可直接看 `auth.json`。
 
@@ -154,6 +166,8 @@ Anthropic SDK / Responses API 客户端同理：把 `base_url` 指到 `http://12
 | `GET /admin/stats` · `GET /admin/logs` | 统计 / 日志 |
 | `GET /admin/keys` · `POST /admin/keys/add` · `/remove` | 多 Key 查看 / 增 / 删 |
 | `POST /admin/revive` | 手动复活被摘除账号（自动复活常开，一般用不到） |
+| `POST /admin/accounts/add` | 新增账号：body `{"name":"acc2"}` —— 自动分配 CDP 端口、写入 accounts.json、立即接入调度，并弹出屏显 Chrome 供登录 |
+| `POST /admin/accounts/show/<name>` | 弹出某账号的屏显 Chrome 窗口（重新登录用；同 profile，Cookie 保留） |
 | `POST /admin/flush-sessions` | 清空本地会话映射；body `{"deleteWeb":true}` 连网页会话一起删（确认删除成功才丢映射） |
 | `GET /admin/sessions` · `POST /admin/sessions/purge` | 会话映射列表 / 批量清理 |
 | `POST /admin/experimental/complete` | 协议实验端点（显式 session/parent/preempt 控制，返回完整事件 transcript） |

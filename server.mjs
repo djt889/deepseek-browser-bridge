@@ -149,11 +149,12 @@ function findChrome() {
   return CHROME_CANDIDATES.find((p) => fs.existsSync(p)) ?? null;
 }
 
-function launchChrome(account) {
+function launchChrome(account, onScreen = false) {
   const chrome = findChrome();
   if (!chrome) { log(`account ${account.name}: chrome.exe not found, start it manually on port ${account.cdpPort}`); return; }
   fs.mkdirSync(account.profileDir, { recursive: true });
-  const pos = CFG.show ? '--window-position=60,60' : '--window-position=-32000,-32000';
+  const visible = onScreen || CFG.show;
+  const pos = visible ? "--window-position=60,60" : "--window-position=-32000,-32000";
   const args = [
     `--remote-debugging-port=${account.cdpPort}`,
     `--user-data-dir=${account.profileDir}`,
@@ -173,7 +174,7 @@ function launchChrome(account) {
   
   const child = spawn(chrome, args, { detached: true, stdio: 'ignore' });
   child.unref();
-  log(`account ${account.name}: launched chrome (port ${account.cdpPort}, profile ${account.profileDir}${CFG.show ? ', on-screen' : ', off-screen'})`);
+  log(`account ${account.name}: launched chrome (port ${account.cdpPort}, profile ${account.profileDir}${visible ? ', on-screen' : ', off-screen'})`);
 }
 
 class Cdp {
@@ -2463,6 +2464,49 @@ const server = http.createServer(async (req, res) => {
       }
       healthCache = { at: 0, value: null };
       return sendJson(res, 200, { ok: true, revived: accounts.map((a) => a.name) });
+    }
+
+    // Add an account from the dashboard: spins up an on-screen Chrome for
+    // login, appends to accounts.json, and wires the account into scheduling
+    // without a bridge restart.
+    if (req.method === 'POST' && url.pathname === '/admin/accounts/add') {
+      const body = JSON.parse(await readBody(req, 64 * 1024));
+      const name = String(body.name ?? '').trim().replace(/[^A-Za-z0-9_-]/g, '');
+      if (!name || name.length > 24) return sendError(res, 400, 'DQ_BAD_NAME (1-24 chars, A-Za-z0-9_-)');
+      if (accounts.some((a) => a.name === name)) return sendError(res, 409, `DQ_NAME_TAKEN ${name}`);
+      const usedPorts = new Set(accounts.map((a) => a.cdpPort));
+      let cdpPort = 9330;
+      while (usedPorts.has(cdpPort)) cdpPort += 1;
+      const account = {
+        name,
+        cdpPort,
+        profileDir: path.join(LOCALAPPDATA, `dq-bridge-profile-${name}`),
+      };
+      accounts.push(account);
+      throttles.set(name, new AccountThrottle());
+      cdps.set(name, new Cdp(account));
+      // Persist alongside the runtime accounts so a restart keeps it.
+      try {
+        const file = path.join(__dirname, 'accounts.json');
+        const disk = JSON.parse(fs.readFileSync(file, 'utf8').length ? fs.readFileSync(file, 'utf8') : '[]');
+        const next = Array.isArray(disk) ? disk.filter((a) => a.name !== name) : [];
+        next.push({ name, cdpPort, profileDir: account.profileDir });
+        fs.writeFileSync(file, JSON.stringify(next, null, 2));
+      } catch { /* keep runtime-only if the fs refuses */ }
+      launchChrome(account);
+      log(`account ${name}: added via dashboard (port ${cdpPort}) — login in the opened Chrome window`);
+      return sendJson(res, 200, { ok: true, name, cdpPort, loginUrl: 'https://chat.deepseek.com/' });
+    }
+
+    // Re-show an account's Chrome window for (re-)login: the off-screen
+    // window can't be repositioned reliably, so relaunch the profile on
+    // screen; Chrome reuses the same user-data-dir, so cookies survive.
+    if (req.method === 'POST' && url.pathname.startsWith('/admin/accounts/show/')) {
+      const name = decodeURIComponent(url.pathname.split('/').pop());
+      const account = accounts.find((a) => a.name === name);
+      if (!account) return sendError(res, 404, 'DQ_NO_SUCH_ACCOUNT');
+      launchChrome(account, true);
+      return sendJson(res, 200, { ok: true, name, note: 'login in the opened window, then refresh' });
     }
 
     if (req.method === 'GET' && url.pathname === '/dashboard') {

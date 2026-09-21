@@ -126,6 +126,7 @@
     <h3 class="sec">号池</h3>
     <div id="alerts"></div>
     <div class="row"><button onclick="doFlush()">清空会话映射</button><button onclick="doFlush(true)">清空映射并删网页会话</button><span id="opMsg" class="kv"></span></div>
+    <div class="row"><input id="newAccName" placeholder="新账号名（英文，如 acc2）" style="width:210px;background:#11161c;color:var(--txt);border:1px solid var(--line2);border-radius:7px;padding:5px 10px;font-size:12.5px"><button onclick="addAccount()">＋ 新增账号</button><span id="addMsg" class="kv"></span></div>
     <div class="acct-grid" id="accts"></div>
   </div>
 
@@ -200,6 +201,24 @@ async function doFlush(withWeb) {
   document.getElementById('opMsg').textContent = '会话映射已清空' + w; refresh(true);
 }
 async function setPwd() { const r = await jpost('/admin/auth/set', { dashboardPassword: document.getElementById('newPwd').value }); document.getElementById('opMsg2').textContent = r.status === 200 ? '密码已更新' : '失败'; }
+async function addAccount() {
+  const name = document.getElementById('newAccName').value.trim();
+  const msg = document.getElementById('addMsg');
+  if (!name) { msg.textContent = '请先填写账号名（英文）'; return; }
+  msg.textContent = '正在启动 Chrome…';
+  const r = await jpost('/admin/accounts/add', { name });
+  if (r.status === 200) {
+    msg.textContent = `已弹出 Chrome 窗口（端口 ${r.data.cdpPort}）：在窗口里登录 DeepSeek，完成后这里会自动显示为在线`;
+    document.getElementById('newAccName').value = '';
+    setTimeout(() => refresh(true), 4000);
+  } else { msg.textContent = r.data?.error || `失败（${r.status}）`; }
+}
+async function showAcc(name) {
+  const r = await jpost(`/admin/accounts/show/${encodeURIComponent(name)}`);
+  document.getElementById('addMsg').textContent = r.status === 200
+    ? `已弹出 ${name} 的 Chrome 窗口：登录后点「手动刷新」，账号自动恢复参与调度`
+    : (r.data?.error || '失败');
+}
 async function loadKeys() {
   try {
     const r = await jget('/admin/keys');
@@ -301,7 +320,8 @@ async function refresh(force) {
       <dl><dt>页面</dt><dd>${esc((a.page || a.error || '').slice(0, 40))}</dd>
       <dt>今日请求</dt><dd>${a.dayCount ?? 0}</dd>
       <dt>上次使用</dt><dd>${a.lastDone ? new Date(a.lastDone).toLocaleTimeString() : '-'}</dd>
-      <dt>会话映射</dt><dd>${(s.accStats || []).find((x) => x.name === a.name)?.sessions ?? 0}</dd></dl></div>`;
+      <dt>会话映射</dt><dd>${(s.accStats || []).find((x) => x.name === a.name)?.sessions ?? 0}</dd>
+      <dt>操作</dt><dd><button style="padding:2px 10px" onclick="showAcc('${esc(a.name)}')">打开窗口登录</button></dd></dl></div>`;
   }).join('');
 
   const softHits = (s.recent || []).filter((r) => r.err && String(r.err).startsWith('DQ_SOFT_THROTTLED')).length;
