@@ -34,15 +34,15 @@ const CFG = {
   port: Number(ENV('DQ_PORT', 39751)),
   concurrency: Math.max(1, Number(ENV('DQ_CONCURRENCY', 6))),
   queueMax: Math.max(1, Number(ENV('DQ_QUEUE_MAX', 32))),
-  // Requests in flight at once, PER ACCOUNT. Measured (2026-09-21): DeepSeek
-  // serves ONE generation at a time per account — firing several at once does
-  // not increase throughput, it makes every request slower. Same 6 requests:
-  //   sequential: 6s wall, 3s median, completions 1s apart
-  //   6 in flight: 170s wall, 80s median, completions 40s apart
-  // So the default is 1 (strict per-account serialisation) and real parallelism
-  // comes from having MORE ACCOUNTS, not more slots per account. Raising this
-  // is possible but measurably counter-productive on a single account.
-  perAccountConcurrency: Math.max(1, Number(ENV('DQ_PER_ACCOUNT_CONCURRENCY', 1))),
+  // Requests in flight at once, PER ACCOUNT. Measured (2026-09-21, tiny
+  // prompts): DeepSeek serves roughly one generation at a time per account —
+  // firing several tiny requests at once does not increase throughput and can
+  // slow every request down (same 6 requests: sequential 6s wall vs 6 in
+  // flight 170s). With LARGE prompts (agent subagents) behaviour may differ.
+  // Owner's call: default raised back to 6 so a single account can run up to 6
+  // subagents in parallel; set DQ_PER_ACCOUNT_CONCURRENCY=1 for strict
+  // per-account serialisation.
+  perAccountConcurrency: Math.max(1, Number(ENV('DQ_PER_ACCOUNT_CONCURRENCY', 6))),
   // Minimum spacing between request STARTS on one account. Kept small mainly to
   // avoid a perfectly simultaneous burst; with perAccountConcurrency=1 the
   // request itself is the pacing, so this barely matters.
