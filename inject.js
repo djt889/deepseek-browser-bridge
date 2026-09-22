@@ -155,6 +155,14 @@
     const json = await res.json().catch(() => null);
     const id = json?.data?.biz_data?.chat_session?.id;
     if (!res.ok || json?.data?.biz_code !== 0 || typeof id !== 'string' || !id) {
+      // Account restricted ("muted"/"banned"): biz_code 5 or explicit flags.
+      // Surfacing a distinct code lets the bridge cool the account down
+      // instead of retrying into an active restriction (which escalates it).
+      const biz = json?.data ?? {};
+      const msg = String(biz.biz_msg ?? json?.msg ?? '').toLowerCase();
+      if (biz.biz_code === 5 || biz.biz_data?.is_muted === true || /muted|banned/.test(msg)) {
+        throw new Error(`DQ_MUTED ${JSON.stringify({ biz_code: biz.biz_code ?? null, msg: biz.biz_msg ?? json?.msg ?? null, mute_until: biz.biz_data?.mute_until ?? null }).slice(0, 200)}`);
+      }
       throw new Error(`DQ_SESSION_FAIL ${res.status} ${JSON.stringify(json ?? '').slice(0, 300)}`);
     }
     return id;
@@ -409,6 +417,18 @@
       const res = await apiPost(ROUTES[type], body, pow, ac.signal);
       if (!res.ok || !res.body) {
         const t = await res.text().catch(() => '');
+        // Muted/banned account: the completion endpoint answers HTTP 403 with
+        // a biz body instead of streaming. Distinguish it from plain auth
+        // failure so the bridge cools the account instead of retrying.
+        if (res.status === 403) {
+          let j = null;
+          try { j = JSON.parse(t); } catch { /* not json */ }
+          const biz = j?.data ?? {};
+          const msg = String(biz.biz_msg ?? j?.msg ?? t).toLowerCase();
+          if (biz.biz_code === 5 || biz.biz_data?.is_muted === true || /muted|banned/.test(msg)) {
+            throw new Error(`DQ_MUTED ${JSON.stringify({ biz_code: biz.biz_code ?? null, msg: biz.biz_msg ?? j?.msg ?? null, mute_until: biz.biz_data?.mute_until ?? null }).slice(0, 200)}`);
+          }
+        }
         throw new Error(`DQ_COMPLETION_HTTP_${res.status} ${t.slice(0, 300)}`);
       }
       report({ id: cmd.id, type: 'start' });

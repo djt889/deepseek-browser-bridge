@@ -79,6 +79,9 @@ const CFG = {
   show: ENV('DQ_SHOW', '') === '1' || process.argv.includes('--show'),
   authFailLimit: Number(ENV('DQ_AUTH_FAIL_LIMIT', 2)), // consecutive auth failures -> account dead
   sessionDeleteTtlMs: Number(ENV('DQ_SESSION_DELETE_TTL_MS', 10 * 86400_000)), // retire web sessions inactive this long (0 = off); activity-based, NOT age-based
+  // Tool-mode full replays create a fresh web session per turn; 10 days of
+  // inactivity lets them pile up on the account. Retire those after 6h idle.
+  toolSessionTtlMs: Number(ENV('DQ_TOOL_SESSION_TTL_MS', 6 * 3600_000)), // 0 = off
   sessionSweepMs: Number(ENV('DQ_SESSION_SWEEP_MS', 10 * 60_000)),            // retirement sweep cadence
   fileAuditTimeoutMs: Number(ENV('DQ_FILE_AUDIT_TIMEOUT_MS', 45000)),         // wait for DeepSeek file audit to settle
   fileAuditPollMs: Number(ENV('DQ_FILE_AUDIT_POLL_MS', 3000)),                // audit poll interval
@@ -565,9 +568,7 @@ class AccountThrottle {
     this.inFlight = 0;          // requests currently generating on this account
     this.authFailStreak = 0;
     this.dead = false;          // set after repeated auth rejections (needs re-login)
-    this.coolUntil = 0;         // pow/network cooldown
-    // Smart throttling: track recent behavior pattern
-    this.requestTimes = [];     // last 20 request timestamps for smoothing
+    this.coolUntil = 0;         // pow/network/mute cooldown
     this.consecutiveSuccess = 0;
     this.lastOk = true;         // track previous request outcome
     this.softThrottleHit = false;
@@ -664,14 +665,24 @@ class AccountThrottle {
       }
 
       this.inFlight += 1;
-      if (job) job.holdsSlot = true;
+      if (job) { job.holdsSlot = true; job.admittedAt = Date.now(); }
       this.lastStart = Date.now();
-      this.requestTimes.push(this.lastStart);
-      if (this.requestTimes.length > 20) this.requestTimes.shift();
       this.hourWindow.push(this.lastStart);
       this.dayCount += 1;
       return;
     }
+  }
+
+  // Refund the hourly/daily quota of an admitted request that never reached
+  // generation (client left the queue / aborted before send). The timestamp is
+  // recorded at admission, so the exact entry is removed — safe under
+  // concurrency, unlike popping the oldest entry.
+  refundAdmission(job) {
+    if (!job?.admittedAt) return;
+    const idx = this.hourWindow.indexOf(job.admittedAt);
+    if (idx !== -1) this.hourWindow.splice(idx, 1);
+    if (this.dayCount > 0) this.dayCount -= 1;
+    job.admittedAt = 0;
   }
 
   // Free one concurrency slot. Safe to call more than once.
@@ -682,12 +693,16 @@ class AccountThrottle {
   done(ok, error) {
     this.lastDone = Date.now();
     this.lastOk = ok; // track previous request outcome
-    
-    if (ok) { 
+
+    if (ok) {
       this.authFailStreak = 0;
       this.consecutiveSuccess += 1;
-      this.emptyStreak = 0;
-      return; 
+      // NOTE: emptyStreak is NOT reset here. done(true) also fires for
+      // empty-stream rounds (they end without error), so resetting on every
+      // completion would keep the streak pinned at 0-1 and the 3-strike
+      // cooldown below could never arm. Empty streaks are cleared by the
+      // done-handler when a round actually produced text/reasoning.
+      return;
     }
     
     // Track soft throttle hits for adaptive backoff
@@ -712,6 +727,21 @@ class AccountThrottle {
       // risk-control pressure on this account: back off, don't hammer
       this.coolUntil = Date.now() + 5 * 60_000;
       log('risk-control cooldown 5min');
+    } else if (code === 'DQ_MUTED') {
+      // Account restricted by DeepSeek (biz_code 5 / is_muted / mute_until in
+      // the error JSON). Retrying into an active restriction escalates it, so
+      // cool until the server's mute_until when present, else a long 60min.
+      let until = Date.now() + 60 * 60_000;
+      try {
+        const j = JSON.parse(String(error ?? '').slice('DQ_MUTED'.length).trim());
+        const mu = Number(j?.mute_until);
+        if (Number.isFinite(mu) && mu > Date.now() / 1000) until = mu * 1000;
+      } catch { /* no/!json payload — keep the 60min default */ }
+      this.coolUntil = until;
+      log(`account muted — cooling until ${new Date(until).toLocaleString()}`);
+    } else if (code === 'DQ_BANNED') {
+      this.dead = true;
+      log('account BANNED — removed from scheduling (needs new login or new account)');
     }
   }
 }
@@ -963,11 +993,21 @@ function joinTranscript(msgs, tools) {
 }
 
 // Best-effort repair of the mildly malformed JSON models emit (trailing commas,
-// single-quoted strings). Deliberately conservative: repairs are only applied
-// when they produce parseable JSON, so a failed repair still falls through to
-// the tag parser rather than inventing arguments.
+// single-quoted strings, unescaped Windows path backslashes). Deliberately
+// conservative: repairs are only applied when they produce parseable JSON, so a
+// failed repair still falls through to the tag parser rather than inventing
+// arguments.
 function tryRepairJson(s) {
   const attempts = [s.replace(/,\s*([}\]])/g, '$1')];   // trailing commas
+  // Windows paths written with single backslashes ("D:\dir\file.txt") are
+  // invalid JSON — but \b \f \n \r \t \u are VALID escapes, so a naive
+  // "keep valid escapes" lookahead silently mangles paths like \file (\f +
+  // "ile" -> formfeed) and \new (\n + "ew" -> newline). In this repair
+  // context the text came from a model writing a path, so those five are
+  // overwhelmingly path segments: escape ALL backslashes except those
+  // already doubled or escaping " / (the only escapes that survive inside a
+  // Windows path argument).
+  attempts.push(s.replace(/(^|[^\\])\\(?!["\\/])/g, '$1\\\\'));
   if (!s.includes('"')) attempts.push(s.replace(/'/g, '"')); // '...' -> "..."
   for (const a of attempts) {
     try { return JSON.parse(a); } catch { /* try next */ }
@@ -1017,6 +1057,7 @@ function createToolStreamFilter(toolNames) {
   const calls = [];
   const unknownTags = [];   // identifier-shaped tags not in the tool list (misspellings)
   let pending = '';
+  let incompleteTail = null; // set when flush() finds a call cut off before its close tag
 
   const isToolNamePrefix = (s) => names.some((n) => n === s || n.startsWith(s));
 
@@ -1069,7 +1110,16 @@ function createToolStreamFilter(toolNames) {
           const close = findToolClose(pending, lt + complete[0].length, name);
           if (close === -1) {
             // call still streaming in — hold from the open tag
-            if (final) { emit += rest; pos = pending.length; break; }
+            if (final) {
+              // Stream ended mid-call: emit the fragment as TEXT. Dropping it
+              // silently hid half-finished calls from the client; passing them
+              // through lets the model see its own truncated output next round
+              // and re-emit a complete call (deepseek-pp recovery semantics).
+              incompleteTail = pending.slice(lt);
+              emit += pending.slice(pos, lt) + incompleteTail;
+              pos = pending.length;
+              break;
+            }
             emit += pending.slice(pos, lt);
             pending = pending.slice(lt);
             return emit;
@@ -1110,6 +1160,7 @@ function createToolStreamFilter(toolNames) {
     flush() { const out = scan(true); const tail = pending; pending = ''; return out + tail; },
     calls,
     unknownTags,
+    get incompleteTail() { return incompleteTail; },
   };
 }
 
@@ -1175,15 +1226,25 @@ function enqueueRetire(account, sessionId) {
 function scanRetireCandidates() {
   if (CFG.sessionDeleteTtlMs <= 0) return;
   const now = Date.now();
-  const newestAt = new Map(); // `${account}/${sessionId}` -> freshest mapping hit
+  const newestAt = new Map();      // `${account}/${sessionId}` -> freshest mapping hit
+  const toolOnlyAt = new Map();    // same key -> is the freshest entry a tool-mode session
   for (const [account, store] of sessions) {
     for (const hit of store.values()) {
       const gk = `${account}/${hit.sessionId}`;
-      if (hit.at > (newestAt.get(gk) ?? 0)) newestAt.set(gk, hit.at);
+      if (hit.at > (newestAt.get(gk) ?? 0)) {
+        newestAt.set(gk, hit.at);
+        toolOnlyAt.set(gk, hit.toolOnly === true);
+      }
     }
   }
   for (const [gk, at] of newestAt) {
-    if (now - at >= CFG.sessionDeleteTtlMs) {
+    // Tool-mode sessions are single-turn throwaways (full replay per turn) —
+    // retire them after the short tool TTL so they don't pile up on the
+    // account. Normal conversational sessions keep the long TTL.
+    const ttl = toolOnlyAt.get(gk) && CFG.toolSessionTtlMs > 0
+      ? CFG.toolSessionTtlMs
+      : CFG.sessionDeleteTtlMs;
+    if (now - at >= ttl) {
       const slash = gk.indexOf('/');
       enqueueRetire(gk.slice(0, slash), gk.slice(slash + 1));
     }
@@ -1235,8 +1296,7 @@ setInterval(sweepRetire, CFG.sessionSweepMs);
 function rememberSession(account, prefix, sessionId, parentId, ids = {}) {
   if (!prefix.length) return;
   const store = sessionStore(account);
-  store.set(hashKey(prefix), { sessionId, parentId, at: Date.now(), ...ids });
-  const evicted = [];
+  store.set(hashKey(prefix), { sessionId, parentId, at: Date.now(), ...ids });  const evicted = [];
   while (store.size > CFG.sessionMax) {
     const oldest = [...store.entries()].sort((a, b) => a[1].at - b[1].at)[0];
     store.delete(oldest[0]);
@@ -1300,7 +1360,10 @@ function finishJob(job, messageId) {
     job.sessionId,
     Number.isInteger(messageId) ? messageId : job.parentId,
     { lastAssistantId: Number.isInteger(messageId) ? messageId : job.responseMessageId,
-      lastUserId: job.requestMessageId },
+      lastUserId: job.requestMessageId,
+      // Tool-mode full replays are single-turn web sessions: mark them so the
+      // retirement sweep retires them on the short tool TTL instead of 10 days.
+      toolOnly: job.toolFull === true },
   );
   recordRequest(job);
   log(`complete [${job.account}] sess=${job.sessionId.slice(0, 8)} ${job.usedDelta ? 'delta' : 'full'} msgs=${job.messages.length} in=${job.prompt.length}c out=${job.text.length}c${job.reasoning ? ` think=${job.reasoning.length}c` : ''}${job.toolCalls?.length ? ` tool_calls=${job.toolCalls.length}` : ''}`);
@@ -1327,6 +1390,9 @@ function failJob(job, error) {
   clearTimeout(job.watchdog);
   clearTimeout(job.graceStopFallback);
   clearTimeout(job.softTimer); job.softTimer = null;
+  // A job that never reached generation (client gone/aborted pre-send) did not
+  // consume the account's quota in any meaningful sense — refund it.
+  if (!job.startedAt) throttles.get(job.account)?.refundAdmission(job);
   throttles.get(job.account)?.done(false, job.error);
   if (job.startedAt) recordRequest(job);
   log(`fail [${job.account ?? '?'}] sess=${String(job.sessionId ?? '').slice(0, 8)} ${job.error}`);
@@ -1461,6 +1527,9 @@ function sendComplete(job) {
           if (unknown.length) {
             log(`unknown tool tag(s): ${unknown.join(',')} — model likely misspelled a tool name (offered: ${job.toolNames.join(',')})`);
           }
+          if (job.toolFilter.incompleteTail) {
+            log(`tool call truncated by stream end (${job.toolFilter.incompleteTail.length}c passed through as text) — model should re-emit next round`);
+          }
         }
         // Built-in tools were removed by design: ALL tool calls go back to
         // the client (standard OpenAI function calling).
@@ -1489,7 +1558,9 @@ function sendComplete(job) {
               }
             }
           } else {
-            // A reasoning-only turn is a model quirk, not risk-control pressure.
+            // Real output on this round: clear the empty streak (moved out of
+            // done(true) — see AccountThrottle.done — so retries and
+            // interleaved successes behave correctly).
             const th = throttles.get(job.account);
             if (th) th.emptyStreak = 0;
           }
@@ -2257,6 +2328,9 @@ async function processCompletion(req, res, parsed, protocol) {
     created: Math.floor(Date.now() / 1000),
     model, messages, prefix, prompt, usedDelta, sessionId, parentId, account,
     sessionBound: usedDelta, reqType: special, childMessageId, targetMessageId,
+    // Full-replay + tools = a throwaway web session per turn (delta lookups
+    // are skipped for tool requests, so this session will never be continued).
+    toolFull: !usedDelta && !!tools,
     think: thinkEffective, search, tools, toolNames, preempt: preemptFlag,
     // Thinking level (max/xhigh/high/medium/low) resolved from reasoning_effort
     thoughtLevel,
@@ -2350,11 +2424,16 @@ const server = http.createServer(async (req, res) => {
       // Anthropic Messages protocol -> internal completion pipeline.
       const parsed = JSON.parse(await readBody(req, 32 * 1024 * 1024));
       const internal = anthropicToInternal(parsed);
+      // Anthropic native thinking config: {type:'enabled', budget_tokens:N} —
+      // any enabled variant maps to effort 'high'; disabled/null passes off.
+      const at = parsed?.thinking;
+      const anthEffort = at?.type === 'enabled' ? 'high' : at?.type === 'disabled' ? 'off' : undefined;
       const shaped = {
         model: parsed?.model ?? 'deepseek-v4.1-flash',
         messages: internal.messages,
         tools: internal.tools,
         stream: !!parsed?.stream,
+        reasoning_effort: parsed?.reasoning_effort ?? anthEffort,
         _attachments: internal.attachments ?? [],
       };
       return processCompletion(req, res, shaped, 'anthropic');
@@ -2369,6 +2448,8 @@ const server = http.createServer(async (req, res) => {
         messages: internal.messages,
         tools: internal.tools,
         stream: !!parsed?.stream,
+        // Responses native reasoning: {effort:'low'|'medium'|'high', ...}
+        reasoning_effort: parsed?.reasoning?.effort ?? parsed?.reasoning_effort,
         _attachments: internal.attachments ?? [],
       };
       return processCompletion(req, res, shaped, 'responses');
