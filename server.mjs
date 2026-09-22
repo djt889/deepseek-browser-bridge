@@ -459,6 +459,14 @@ function calculateAccountScore(th, h) {
   } else if (th.coolUntil > Date.now()) {
     score -= 10;
   }
+  // 2b. Recent empty-stream pressure and muted state are risk-control
+  // signals the score must reflect — otherwise a muted account still
+  // shows a healthy green number on the dashboard.
+  const emptyStreak = th.emptyStreak ?? 0;
+  if (emptyStreak >= 3) score -= 20;
+  else if (emptyStreak === 2) score -= 10;
+  else if (emptyStreak === 1) score -= 5;
+  if (th.lastError?.startsWith('DQ_MUTED')) score -= 40;
   
   // 3. Last error time recency (20% weight): recent errors = worse
   // (simplified: use consecutiveSuccess instead)
@@ -575,23 +583,24 @@ class AccountThrottle {
     this.softThrottleTime = 0;
   }
 
-  // Backing off after an empty stream: hold one request at a time and give the
-  // account a short rest, then resume. Deliberately brief — the earlier
-  // 30-60s-for-10-minutes version turned a single empty stream into a
-  // 10-minute slow path (every request 40-50s apart), which is far worse for
-  // the user than the hiccup it was reacting to.
+  // Backing off after repeated empty streams: SPACE OUT starts rather than
+  // blocking new requests. The earlier semantics (drop to 1 slot + 5s stagger)
+  // effectively parked every incoming request behind a wall — on a
+  // single-account setup that froze the whole bridge for a minute, including
+  // the user's own manual retry. Now all 6 slots stay open; starts are just
+  // spaced 20s apart for 60s, so a manual retry departs within 20s worst case.
   backingOff() {
     return this.softThrottleHit && Date.now() - this.softThrottleTime < 60000;
   }
 
-  // Slots actually usable right now (a backing-off account drops to 1).
+  // Slots stay at full width even while backing off (see backingOff()).
   effectiveConcurrency() {
-    return this.backingOff() ? 1 : CFG.perAccountConcurrency;
+    return CFG.perAccountConcurrency;
   }
 
-  // Minimum spacing between starts (a modest rest while backing off).
+  // Minimum spacing between starts: 20s while backing off, else configured.
   effectiveStagger() {
-    return this.backingOff() ? 5000 : CFG.startStaggerMs;
+    return this.backingOff() ? 20000 : CFG.startStaggerMs;
   }
 
   parseQuiet() {
@@ -693,6 +702,7 @@ class AccountThrottle {
   done(ok, error) {
     this.lastDone = Date.now();
     this.lastOk = ok; // track previous request outcome
+    if (!ok) this.lastError = String(error ?? '');
 
     if (ok) {
       this.authFailStreak = 0;
@@ -754,12 +764,21 @@ const throttles = new Map(accounts.map((a) => [a.name, new AccountThrottle()]));
 // the longest-idle account when every slot is busy, so the job still queues on
 // a real account instead of failing.
 function pickAccount() {
+  // Prefer accounts that are live AND not cooling: a muted/cooling account
+  // admits the job then parks it inside gate() until the cooldown expires,
+  // while a healthy sibling sits idle. Only when every live account is
+  // cooling do we fall through and queue on the one cooling soonest.
   const live = accounts.filter((a) => !throttles.get(a.name).dead);
   if (live.length === 0) return null;
+  const ready = live.filter((a) => throttles.get(a.name).coolUntil <= Date.now());
+  const pool = ready.length ? ready : live;
   const th = (a) => throttles.get(a.name);
-  const withSlot = live.filter((a) => th(a).inFlight < th(a).effectiveConcurrency());
-  const pool = withSlot.length ? withSlot : live;
-  return pool.sort((a, b) => {
+  const withSlot = pool.filter((a) => th(a).inFlight < th(a).effectiveConcurrency());
+  const candidates = withSlot.length ? withSlot : pool;
+  return candidates.sort((a, b) => {
+    // among cooling leftovers, the one cooling soonest goes first
+    const cool = (th(a).coolUntil || 0) - (th(b).coolUntil || 0);
+    if (cool !== 0) return cool;
     const load = th(a).inFlight - th(b).inFlight;
     if (load !== 0) return load;             // least loaded first
     return th(a).lastDone - th(b).lastDone;  // then longest idle
@@ -1536,11 +1555,18 @@ function sendComplete(job) {
         // Empty-answer guard: the web stream can end with NO visible text while
         // still emitting reasoning (long thinking can consume the whole turn),
         // or with a fully empty 200 stream on a same-session follow-up. Both
-        // are useless to the caller, so retry once. Reasoning alone is NOT a
-        // valid answer — require job.text (or a real tool call).
+        // are useless to the caller. Escalating retry chain (each retry is a
+        // real web request, so the budget is deliberately tight):
+        //   attempt 1 -> retry immediately on a fresh session
+        //   attempt 2 -> rest 20s, retry once more
+        //   still empty -> fail with DQ_EMPTY_ANSWER (client sees a real
+        //                  error and can retry; never a blank 200).
+        // Reasoning alone is NOT a valid answer — require job.text (or a
+        // real tool call).
         const hasAnswer = !!job.text || !!(job.toolFilter?.calls?.length);
-        if (!hasAnswer && job.sessionId && !job.emptyRetry) {
-          job.emptyRetry = true;
+        if (!hasAnswer && job.sessionId && (job.emptyRetries ?? 0) < 2) {
+          job.emptyRetries = (job.emptyRetries ?? 0) + 1;
+          const attempt = job.emptyRetries;
           // A FULLY empty stream (no text AND no reasoning) is the web API's
           // silent refusal rather than a model non-answer. It happens
           // intermittently even at concurrency 1, so a single occurrence must
@@ -1554,7 +1580,7 @@ function sendComplete(job) {
               if (th.emptyStreak >= 3 && !th.backingOff()) {
                 th.softThrottleHit = true;
                 th.softThrottleTime = Date.now();
-                log(`account ${job.account}: ${th.emptyStreak} consecutive empty streams — resting 60s at 1 request`);
+                log(`account ${job.account}: ${th.emptyStreak} consecutive empty streams — spacing starts 20s apart for 60s`);
               }
             }
           } else {
@@ -1564,8 +1590,13 @@ function sendComplete(job) {
             const th = throttles.get(job.account);
             if (th) th.emptyStreak = 0;
           }
-          log(`empty answer detected (text=${job.text.length}c reasoning=${job.reasoning.length}c) — retrying once on a fresh session (sess=${job.sessionId.slice(0, 8)})`);
+          log(`empty answer detected (text=${job.text.length}c reasoning=${job.reasoning.length}c, attempt ${attempt}/2) — retrying on a fresh session (sess=${job.sessionId.slice(0, 8)})`);
           (async () => {
+            // Second attempt rests first: an immediate double replay into a
+            // just-refused account tends to reproduce the empty answer.
+            if (attempt === 2) {
+              await sleep(20000, job.abortController.signal);
+            }
             await throttles.get(job.account).gate(job.abortController.signal, job);
             const sKey = `${job.account}/${job.sessionId}`;
             const since = Date.now() - (sessionLastDone.get(sKey) ?? 0);
@@ -1587,6 +1618,11 @@ function sendComplete(job) {
             await sendComplete(job);
           })().catch((e) => failJob(job, e.message || e));
           return;
+        }
+        if (!hasAnswer && job.sessionId) {
+          // Both retries exhausted: hand the client a real error instead of a
+          // blank 200 so it can decide to retry (pi/agents handle 5xx fine).
+          return failJob(job, `DQ_EMPTY_ANSWER — 3 consecutive empty streams (sess=${job.sessionId.slice(0, 8)}); retry the request`);
         }
         finishJob(job, ev.messageId);
       } else if (ev.type === 'error') {
@@ -2947,12 +2983,28 @@ loadSessions();
 loadFileCache();
 
 const BOOT_TS = Date.now();
-server.listen(CFG.port, '127.0.0.1', () => {
-  log(`DeepSeek Browser Bridge on http://127.0.0.1:${CFG.port}/v1`);
-  log(`accounts: ${accounts.map((a) => `${a.name}@${a.cdpPort}`).join(', ')} | parallel=${accounts.length}x${CFG.perAccountConcurrency} (cap ${CFG.concurrency}) stagger=${CFG.startStaggerMs}ms${CFG.minGapMs ? ` legacyGap=${CFG.minGapMs}+0..${CFG.jitterMs}ms` : ''} hour=${CFG.maxPerHour}/acc day=${CFG.maxPerDay || 'unlimited'}/acc think=${CFG.think} quiet='${CFG.quietHours || 'off'}'`);
-  log(`session retirement: ${CFG.sessionDeleteTtlMs > 0 ? `delete web sessions inactive >= ${Math.round(CFG.sessionDeleteTtlMs / 86400_000)}d (activity-based)` : 'off'} | sweep every ${Math.round(CFG.sessionSweepMs / 60000)}min (fail-safe: drop mapping only after confirmed web delete)`);
-  log(`profile dirs under ${LOCALAPPDATA}${CFG.show ? ' (windows ON-SCREEN for login)' : ' (silent, off-screen)'}`);
-});
+// Restart race guard: a just-killed predecessor may still hold the port for a
+// second or two (TIME_WAIT / socket teardown). Retry the bind a few times
+// instead of dying with EADDRINUSE — the bridge is the only thing supposed
+// to be on this port, so waiting is always correct.
+function listenWithRetry(attempt = 0) {
+  server.once('error', (e) => {
+    if (e.code === 'EADDRINUSE' && attempt < 10) {
+      log(`port ${CFG.port} busy (previous process closing?) — retrying in 1s (${attempt + 1}/10)`);
+      setTimeout(() => listenWithRetry(attempt + 1), 1000);
+    } else {
+      console.error(e);
+      process.exit(1);
+    }
+  });
+  server.listen(CFG.port, '127.0.0.1', () => {
+    log(`DeepSeek Browser Bridge on http://127.0.0.1:${CFG.port}/v1`);
+    log(`accounts: ${accounts.map((a) => `${a.name}@${a.cdpPort}`).join(', ')} | parallel=${accounts.length}x${CFG.perAccountConcurrency} (cap ${CFG.concurrency}) stagger=${CFG.startStaggerMs}ms${CFG.minGapMs ? ` legacyGap=${CFG.minGapMs}+0..${CFG.jitterMs}ms` : ''} hour=${CFG.maxPerHour}/acc day=${CFG.maxPerDay || 'unlimited'}/acc think=${CFG.think} quiet='${CFG.quietHours || 'off'}'`);
+    log(`session retirement: ${CFG.sessionDeleteTtlMs > 0 ? `delete web sessions inactive >= ${Math.round(CFG.sessionDeleteTtlMs / 86400_000)}d (activity-based)` : 'off'} | sweep every ${Math.round(CFG.sessionSweepMs / 60000)}min (fail-safe: drop mapping only after confirmed web delete)`);
+    log(`profile dirs under ${LOCALAPPDATA}${CFG.show ? ' (windows ON-SCREEN for login)' : ' (silent, off-screen)'}`);
+  });
+}
+listenWithRetry();
 
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => {
   writeSessionsSync(); writeStatsSync(); // flush debounced state before exit
