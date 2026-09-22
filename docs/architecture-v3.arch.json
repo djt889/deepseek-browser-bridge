@@ -1,0 +1,416 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "DeepSeek Browser Bridge v3 架构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "request-path",
+        "label": "请求主链路",
+        "focus": [
+          "clients",
+          "gateway",
+          "internal",
+          "sched",
+          "gate",
+          "cdp",
+          "inject",
+          "deepseek",
+          "stream"
+        ],
+        "note": "客户端 → 三协议归一 → 排队 → 账号闸门（配额+冷却感知）→ CDP → 页面注入 → DeepSeek 网页版 → SSE 回传。"
+      },
+      {
+        "id": "stability",
+        "label": "稳定性防线",
+        "focus": [
+          "retry",
+          "tools",
+          "stream",
+          "clients",
+          "gate"
+        ],
+        "note": "空流升级重试链（2 次递进 + DQ_EMPTY_ANSWER）、静音识别长冷却、截断工具调用透传。"
+      },
+      {
+        "id": "session-mode",
+        "label": "会话双模式",
+        "focus": [
+          "internal",
+          "sessions",
+          "deepseek"
+        ],
+        "note": "普通聊天增量续聊（前缀哈希映射）；工具请求全量重放（新会话，6 小时回收）。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "clients",
+      "type": "external",
+      "label": "本地客户端",
+      "sublabel": "pi / CCR / 多子代理",
+      "pos": [
+        30,
+        280
+      ],
+      "size": [
+        140,
+        80
+      ]
+    },
+    {
+      "id": "gateway",
+      "type": "security",
+      "label": "HTTP 服务 :39751",
+      "sublabel": "OpenAI · Claude · Responses",
+      "pos": [
+        30,
+        70
+      ],
+      "size": [
+        130,
+        80
+      ]
+    },
+    {
+      "id": "internal",
+      "type": "backend",
+      "label": "统一消息模型",
+      "sublabel": "会话双模式分流",
+      "pos": [
+        215,
+        70
+      ],
+      "size": [
+        130,
+        80
+      ]
+    },
+    {
+      "id": "sched",
+      "type": "backend",
+      "label": "任务队列",
+      "sublabel": "pump() · 全局并发 6",
+      "pos": [
+        380,
+        70
+      ],
+      "size": [
+        130,
+        80
+      ]
+    },
+    {
+      "id": "gate",
+      "type": "security",
+      "label": "账号闸门",
+      "sublabel": "6 槽 · 90/时 · 500/天 · 冷却感知",
+      "pos": [
+        545,
+        70
+      ],
+      "size": [
+        160,
+        80
+      ]
+    },
+    {
+      "id": "cdp",
+      "type": "cloud",
+      "label": "CDP 连接管理",
+      "sublabel": "每账号一条 · 双向 RPC",
+      "pos": [
+        740,
+        70
+      ],
+      "size": [
+        130,
+        80
+      ]
+    },
+    {
+      "id": "inject",
+      "type": "backend",
+      "label": "inject.js 页面注入",
+      "sublabel": "PoW · SSE 解码 · 静音识别",
+      "pos": [
+        905,
+        70
+      ],
+      "size": [
+        145,
+        80
+      ]
+    },
+    {
+      "id": "deepseek",
+      "type": "external",
+      "label": "DeepSeek 网页版",
+      "sublabel": "chat.deepseek.com",
+      "pos": [
+        950,
+        280
+      ],
+      "size": [
+        150,
+        80
+      ]
+    },
+    {
+      "id": "stream",
+      "type": "backend",
+      "label": "响应分流",
+      "sublabel": "SSE 按协议回传",
+      "pos": [
+        785,
+        280
+      ],
+      "size": [
+        130,
+        80
+      ]
+    },
+    {
+      "id": "tools",
+      "type": "backend",
+      "label": "工具调用解析",
+      "sublabel": "XML 流式扫描 · 截断透传",
+      "pos": [
+        600,
+        280
+      ],
+      "size": [
+        150,
+        80
+      ]
+    },
+    {
+      "id": "retry",
+      "type": "security",
+      "label": "空流升级重试",
+      "sublabel": "立即×1 + 20s×1 → 报错不糊弄",
+      "pos": [
+        390,
+        280
+      ],
+      "size": [
+        175,
+        80
+      ]
+    },
+    {
+      "id": "sessions",
+      "type": "database",
+      "label": "会话映射",
+      "sublabel": "工具会话 6h 回收",
+      "pos": [
+        215,
+        280
+      ],
+      "size": [
+        140,
+        80
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "本机回环（可信区）",
+      "wraps": [
+        "clients",
+        "gateway",
+        "internal",
+        "sched",
+        "gate",
+        "cdp",
+        "stream",
+        "tools",
+        "retry",
+        "sessions"
+      ],
+      "pad": 18
+    },
+    {
+      "kind": "security-group",
+      "label": "Chrome 页面上下文",
+      "wraps": [
+        "inject",
+        "deepseek"
+      ],
+      "pad": 14
+    }
+  ],
+  "connections": [
+    {
+      "from": "clients",
+      "to": "gateway",
+      "label": "POST /v1/*",
+      "variant": "emphasis",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelAt": [
+        112,
+        210
+      ]
+    },
+    {
+      "from": "gateway",
+      "to": "internal",
+      "label": "三协议归一",
+      "labelAt": [
+        158.5,
+        38
+      ]
+    },
+    {
+      "from": "internal",
+      "to": "sched"
+    },
+    {
+      "from": "sched",
+      "to": "gate",
+      "label": "调度",
+      "labelAt": [
+        347.5,
+        38
+      ]
+    },
+    {
+      "from": "gate",
+      "to": "cdp",
+      "label": "放行",
+      "labelAt": [
+        707.5,
+        38
+      ]
+    },
+    {
+      "from": "cdp",
+      "to": "inject",
+      "label": "CDP RPC",
+      "variant": "emphasis",
+      "labelAt": [
+        857.5,
+        38
+      ]
+    },
+    {
+      "from": "inject",
+      "to": "deepseek",
+      "label": "页面自身 fetch",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        940,
+        198
+      ]
+    },
+    {
+      "from": "deepseek",
+      "to": "stream",
+      "label": "流回传",
+      "variant": "emphasis",
+      "fromSide": "left",
+      "toSide": "right",
+      "labelAt": [
+        907.5,
+        263
+      ]
+    },
+    {
+      "from": "stream",
+      "to": "tools",
+      "label": "工具标签扫描",
+      "labelAt": [
+        733.5,
+        263
+      ]
+    },
+    {
+      "from": "tools",
+      "to": "retry",
+      "label": "结果裁决",
+      "labelAt": [
+        553.5,
+        263
+      ]
+    },
+    {
+      "from": "retry",
+      "to": "sessions",
+      "label": "空流重放",
+      "variant": "dashed",
+      "labelAt": [
+        347.5,
+        263
+      ]
+    },
+    {
+      "from": "stream",
+      "to": "clients",
+      "label": "SSE / 协议回传",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "via": [
+        [
+          850,
+          445
+        ],
+        [
+          100,
+          445
+        ]
+      ],
+      "labelAt": [
+        420,
+        445
+      ]
+    },
+    {
+      "from": "internal",
+      "to": "sessions",
+      "label": "前缀哈希续聊",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        290.0,
+        190
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "请求主链路",
+      "items": [
+        "三协议入口归一为内部消息模型",
+        "普通聊天增量续聊，工具请求全量重放",
+        "调度 → 账号闸门 → CDP → 页面 fetch 出网"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "稳定性防线",
+      "items": [
+        "空流重试链：立即重试 + 歇 20s 重试，仍空报 DQ_EMPTY_ANSWER",
+        "静音识别（biz_code 5 / mute_until）长冷却，冷却账号不接新单",
+        "截断工具调用透传重发 + 失控输出保护"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "账号安全设计",
+      "items": [
+        "全部请求由真实 Chrome 页面发出（TLS/指纹与真人一致）",
+        "90/时 + 500/天红线 + 500ms 错峰，连续空流仅错峰不堵新请求",
+        "工具会话 6 小时闲置回收，账号足迹可控"
+      ]
+    }
+  ]
+}

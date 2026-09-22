@@ -4,9 +4,9 @@
 
 零第三方依赖，单文件 `node server.mjs` 即可运行（Node ≥ 22）。
 
-![架构图](docs/architecture-v2.png)
+![架构图](docs/architecture-v3.png)
 
-> 🖱️ [交互式架构图](docs/architecture-v2.html)（可缩放 / 主题切换 / 路径追踪） · [图源规格](docs/architecture-v2.arch.json)
+> 🖱️ [交互式架构图](docs/architecture-v3.html)（可缩放 / 主题切换 / 路径追踪） · [图源规格](docs/architecture-v3.arch.json) · [深色版](docs/architecture-v3-dark.png)
 
 协议移植自 [zhu1090093659/deepseek-pp](https://github.com/zhu1090093659/deepseek-pp)（Apache-2.0，2026-09 已归档）。
 
@@ -25,6 +25,8 @@
 - **保号节流**：账号级并发槽 + 启动错峰 + 每小时/每日限额 + 静默时段，全部按单账号独立计算
 - **管理面板**：Dashboard（号池健康 / 实时日志 / 15 天统计 / 会话清扫 / 多 API Key 管理）
 - **韧性**：账号自动复活、悬空会话映射自愈、网页会话 10 天未活跃自动回收（fail-safe：确认删除成功才丢映射）、客户端断开自动优雅停止
+- **空流防线（v3）**：同会话 15s 冷却 → 空流立即重试 ×1 → 歇 20s 重试 ×1 → 仍空报 `DQ_EMPTY_ANSWER`（客户端可识别重试，**永不返回空白 200**）；连续 3 次空流仅错峰 20s，不堵新请求
+- **风控识别（v3）**：静音/受限响应（biz_code 5 / `mute_until`）→ 按服务端给的时间长冷却；`DQ_BANNED` 自动摘号；冷却中的账号不接新单（多号时健康号不受拖累）
 
 ## 为什么风险低
 
@@ -168,6 +170,7 @@ Anthropic SDK / Responses API 客户端同理：把 `base_url` 指到 `http://12
 | `POST /admin/revive` | 手动复活被摘除账号（自动复活常开，一般用不到） |
 | `POST /admin/accounts/add` | 新增账号：body `{"name":"acc2"}` —— 自动分配 CDP 端口、写入 accounts.json、立即接入调度，并弹出屏显 Chrome 供登录 |
 | `POST /admin/accounts/show/<name>` | 弹出某账号的屏显 Chrome 窗口（重新登录用；同 profile，Cookie 保留） |
+| `POST /admin/accounts/delete/<name>` | 删除账号：立即停止接单、关闭其 Chrome 页面、从 accounts.json 移除并清会话映射（最后一个账号不可删；profile 目录保留，同名重加可恢复登录态） |
 | `POST /admin/flush-sessions` | 清空本地会话映射；body `{"deleteWeb":true}` 连网页会话一起删（确认删除成功才丢映射） |
 | `GET /admin/sessions` · `POST /admin/sessions/purge` | 会话映射列表 / 批量清理 |
 | `POST /admin/experimental/complete` | 协议实验端点（显式 session/parent/preempt 控制，返回完整事件 transcript） |
@@ -215,6 +218,8 @@ Anthropic SDK / Responses API 客户端同理：把 `base_url` 指到 `http://12
 | `DQ_FILE_CACHE_TTL_MS` | 604800000 | 文件内容哈希缓存 TTL（7 天），同字节文件复用已审计文件 id |
 | `DQ_AUTO_REVIVE` | 1 | 页面重新登录时自动摘除 dead 标记 |
 | `DQ_SHOW` | 0 | `1` = Chrome 窗口屏显启动（等同 `--show`，用于首次登录） |
+| `DQ_TOOL_SESSION_TTL_MS` | 21600000 | 工具模式全量重放会话的回收 TTL（6 小时闲置即删，防账号会话堆积）；0=关闭 |
+| `DQ_RUNAWAY_WINDOW` 等 | 见代码 | 失控检测窗口/跨度/次数（1600/16000/3），一般不动 |
 
 节流参数保持默认即可安心日常使用——**行为模式（频率画像）是唯一变量**，传输与指纹层无法被区分（真实 Chrome）。
 
@@ -281,6 +286,8 @@ Anthropic SDK / Responses API 客户端同理：把 `base_url` 指到 `http://12
 | `DQ_TAB_NAVIGATED` | 请求进行中页面被导航，重试即可 |
 | `DQ_FILE_AUDIT_REJECTED` | 附件被审计拒绝且重试仍拒：换文件或缩小体积 |
 | `DQ_SOFT_THROTTLED` | 疑似官方软限流（受理但不出字）：**完全停手 1~2 小时**，继续请求会延长窗口；确认非限流（如超长 prompt 预处理）则调大 `DQ_SOFT_THROTTLE_MS` |
+| `DQ_EMPTY_ANSWER` | 3 连空流（含 2 次自动重试后）：客户端按需重发即可——账号此时只处于错峰态（≤20s/次），不会被堵死 |
+| `DQ_MUTED` | 账号被静音/受限：桥已按 `mute_until` 长冷却（默认 60 分钟），冷却结束自动恢复；期间换其他账号工作 |
 
 ## 文件说明
 
@@ -292,8 +299,8 @@ Anthropic SDK / Responses API 客户端同理：把 `base_url` 指到 `http://12
 | `wasm/sha3_wasm_bg.wasm` | DeepSeek 官方网页的 PoW WASM（原样取自其前端，本地求解挑战） |
 | `accounts.example.json` | 多账号配置示例（复制为 `accounts.json`） |
 | `agent-demo.mjs` | 客户端工具循环参考实现（搜索 + fetch） |
-| `test-sse.mjs` / `test-tools.mjs` / `tests/*.test.mjs` | 离线测试共 35 项：流式解码、工具解析、失控保护（`node tests/tool-parse.test.mjs`） |
-| `docs/investigation-report.md` | 并发架构 / 工具调用 / 架构图的调查记录（含实测数据） |
+| `test-sse.mjs` / `test-tools.mjs` / `tests/*.test.mjs` | 离线测试共 47+ 项：流式解码、工具解析、失控保护、JSON 修复 sanity（`node tests/tool-parse.test.mjs`） |
+| `tests/e2e-test.sh` | 低频端到端冒烟（4 用例间隔 30s，真实验证用，日常别常跑） |
 | `start-chrome.cmd` / `guard-bridge.cmd` / `install-guard.cmd` | 手工起 Chrome / 存活守护 / 注册守护计划任务 |
 
 运行时自动生成（已 gitignore，含个人数据，勿提交）：`auth.json`、`accounts.json`、`sessions.json`、`files.json`、`stats.json`、`bridge.log`。

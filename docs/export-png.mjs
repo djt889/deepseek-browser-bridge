@@ -29,8 +29,13 @@ const page = `<!doctype html>
 <head><meta charset="utf-8"><title>diagram</title>
 <style>${styles.join('\n')}</style>
 <style>
-html,body{margin:0;padding:0;background:var(--surface-1,#fff);}
-.diagram-container{display:block;width:${vbW}px;height:${vbH}px;margin:0;padding:0;border:0;box-shadow:none;border-radius:0;background:transparent;overflow:visible;}
+/* --surface-1 is never defined in the artifact's stylesheets (always falls
+ * back to #fff), so a dark-theme export rendered dark nodes on a white page.
+ * Use the page's real background variable with a dark-typical fallback, and
+ * add breathing room below the viewBox so bottom-edge labels (the SSE
+ * corridor pill) are not clipped by the canvas edge. */
+html,body{margin:0;padding:0;background:var(--bg,#020617);}
+.diagram-container{display:block;width:${vbW}px;height:${vbH + 12}px;margin:0;padding:0;border:0;box-shadow:none;border-radius:0;background:var(--bg,#020617);overflow:visible;}
 .diagram-container>svg{display:block;width:${vbW}px;height:${vbH}px;}
 </style>
 </head>
@@ -49,7 +54,7 @@ const result = spawnSync(CHROME, [
   '--no-first-run',
   '--no-default-browser-check',
   `--force-device-scale-factor=${SCALE}`,
-  `--window-size=${Math.round(vbW)},${Math.round(vbH)}`,
+  `--window-size=${Math.round(vbW)},${Math.round(vbH + 12)}`,
   `--user-data-dir=${path.join(tmpDir, 'profile')}`,
   `--screenshot=${target}`,
   pathToFileURL(pagePath).href,
