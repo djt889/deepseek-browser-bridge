@@ -1065,6 +1065,69 @@ function parseToolArgs(body) {
   return matched ? args : { _unparsed: s };
 }
 
+// DSML normalisation. DeepSeek's web models sometimes emit their PRIVATE
+// tool markup (the format the web UI itself parses) instead of the XML tag
+// protocol this bridge injects — the model has it in its training data and
+// it competes with our prompt:
+//   <｜｜DSML｜｜ calls>
+//   <｜｜DSML｜｜ invoke name="write">
+//   <｜｜DSML｜｜ parameter name="filePath" string="true">E:\a.txt</｜｜DSML｜｜ parameter>
+//   </｜｜DSML｜｜ invoke>
+//   </｜｜DSML｜｜ calls>
+// (fullwidth pipes also appear as ASCII |.) Semantics ported from
+// Fly143/deepseek-free-api tool_dsml.py: calls -> invoke -> parameter with
+// optional CDATA bodies. Rewritten into our `<name>{json}</name>` form so
+// the standard scanner picks the calls up; non-tool text passes through.
+function normalizeDsml(text) {
+  if (!text || !text.includes('DSML')) return text;
+  const PIPE = /｜|\|/;  // fullwidth or ASCII pipe inside the sentinel
+  // Split out DSML block(s); keep surrounding text intact.
+  let out = '';
+  let rest = text;
+  for (;;) {
+    const open = rest.search(/<\s*[｜|]{2}\s*DSML\s*[｜|]{2}\s*calls\s*>/);
+    if (open === -1) { out += rest; break; }
+    const closeRe = /<\s*\/\s*[｜|]{2}\s*DSML\s*[｜|]{2}\s*calls\s*>/;
+    const closeM = closeRe.exec(rest.slice(open));
+    const close = closeM ? open + closeM.index + closeM[0].length : -1;
+    const block = close === -1 ? rest.slice(open) : rest.slice(open, close);
+    out += rest.slice(0, open);
+    out += dsmlBlockToXml(block);
+    if (close === -1) break; // unterminated: consumed the tail
+    rest = rest.slice(close);
+  }
+  return out;
+}
+
+function dsmlBlockToXml(block) {
+  const calls = [];
+  const invokeRe = /<\s*[｜|]{2}\s*DSML\s*[｜|]{2}\s*invoke\s+name="([^"]+)"\s*>([\s\S]*?)<\s*\/\s*[｜|]{2}\s*DSML\s*[｜|]{2}\s*invoke\s*>/g;
+  let m;
+  while ((m = invokeRe.exec(block)) !== null) {
+    const name = m[1];
+    const body = m[2];
+    const args = {};
+    const paramRe = /<\s*[｜|]{2}\s*DSML\s*[｜|]{2}\s*parameter\s+name="([^"]+)"(?:\s+string="[^"]*")?\s*>([\s\S]*?)<\s*\/\s*[｜|]{2}\s*DSML\s*[｜|]{2}\s*parameter\s*>/g;
+    let p;
+    while ((p = paramRe.exec(body)) !== null) {
+      let val = p[2];
+      // CDATA wrapper, when present
+      const cdata = /^\s*<!\[CDATA\[([\s\S]*)\]\]>\s*$/.exec(val);
+      if (cdata) val = cdata[1];
+      val = val.trim();
+      // numeric / boolean / JSON-looking parameters round-trip as values
+      if (val === 'true' || val === 'false') val = val === 'true';
+      else if (/^-?\d+(\.\d+)?$/.test(val)) val = Number(val);
+      else if ((val.startsWith('{') && val.endsWith('}')) || (val.startsWith('[') && val.endsWith(']'))) {
+        try { val = JSON.parse(val); } catch { /* keep string */ }
+      }
+      args[p[1]] = val;
+    }
+    calls.push(`<${name}>${JSON.stringify(args)}</${name}>`);
+  }
+  return calls.join('\n');
+}
+
 // Linear scanner turning model text into {content, toolCalls}, buffering
 // partial tool tags while streaming (port of deepseek-pp tool-parser semantics:
 // `<name>{json}</name>` with name in the catalog; unknown tags pass through).
@@ -1175,7 +1238,7 @@ function createToolStreamFilter(toolNames) {
   }
 
   return {
-    push(text) { pending += text; return scan(false); },
+    push(text) { pending += normalizeDsml(text); return scan(false); },
     flush() { const out = scan(true); const tail = pending; pending = ''; return out + tail; },
     calls,
     unknownTags,
