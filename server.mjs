@@ -1131,6 +1131,25 @@ function dsmlBlockToXml(block) {
 // Linear scanner turning model text into {content, toolCalls}, buffering
 // partial tool tags while streaming (port of deepseek-pp tool-parser semantics:
 // `<name>{json}</name>` with name in the catalog; unknown tags pass through).
+// DSML blocks (DeepSeek's private markup) are detected at the OPEN sentinel
+// and held whole until their close sentinel arrives, then rewritten to XML —
+// per-chunk normalisation cannot work because the sentinel itself is split
+// across chunk boundaries in streaming mode.
+const DSML_OPEN_RE = /<\s*[｜|]{2}\s*DSML\s*[｜|]{2}\s*calls\s*>/;
+const DSML_CLOSE_RE = /<\s*\/\s*[｜|]{2}\s*DSML\s*[｜|]{2}\s*calls\s*>/;
+// True when tail is a PREFIX of an open sentinel (e.g. "<", "<｜", "<｜｜D").
+// Cheapest correct test: the tail up to ~14 chars must be a prefix of one of
+// the literal sentinel shapes (pipe may be fullwidth or ASCII).
+function looksLikePartialDsmlOpen(tail) {
+  if (!tail.startsWith('<')) return false;
+  for (const pipe of ['｜', '|']) {
+    const sentinel = `<${pipe}${pipe}DSML${pipe}${pipe} calls>`;
+    for (let n = 1; n <= Math.min(tail.length, sentinel.length); n++) {
+      if (tail.slice(0, n) === sentinel.slice(0, n)) return true;
+    }
+  }
+  return false;
+}
 function createToolStreamFilter(toolNames) {
   const names = [...toolNames];
   if (!names.length) return null;
@@ -1140,6 +1159,7 @@ function createToolStreamFilter(toolNames) {
   const unknownTags = [];   // identifier-shaped tags not in the tool list (misspellings)
   let pending = '';
   let incompleteTail = null; // set when flush() finds a call cut off before its close tag
+  let dsmlDepth = 0;         // >0 while a DSML block is being held
 
   const isToolNamePrefix = (s) => names.some((n) => n === s || n.startsWith(s));
 
@@ -1180,6 +1200,54 @@ function createToolStreamFilter(toolNames) {
   function scan(final) {
     let pos = 0;
     let emit = '';
+    // DSML block handling: while a block is open (or an open sentinel starts
+    // here), hold everything and rewrite the whole block to XML once the
+    // close sentinel is present. In streaming mode the sentinel arrives split
+    // across chunks, so this must be buffered, not normalised per chunk.
+    for (;;) {
+      if (dsmlDepth === 0) {
+        const openM = DSML_OPEN_RE.exec(pending.slice(pos));
+        if (openM) {
+          emit += pending.slice(pos, pos + openM.index);
+          pending = pending.slice(pos + openM.index);
+          pos = 0;
+          dsmlDepth = 1;
+          continue;
+        }
+        // A PARTIAL DSML sentinel at the very tail must also be held, or its
+        // bytes leak as text and the completed sentinel never reassembles.
+        const tail = pending.slice(pos);
+        const partialMatch = tail.startsWith('<')
+          && !/^<\/?[A-Za-z_]/.test(tail.slice(0, 2) || ' ')
+          && '<'.concat('｜｜DSML', '｜｜') !== '' // constant guard (readability)
+          && looksLikePartialDsmlOpen(tail);
+        if (partialMatch && !final) {
+          // Hold the partial sentinel; text before it (pos..tailStart) is safe
+          // to emit and must not be swallowed.
+          emit += pending.slice(pos, pending.length - tail.length);
+          pending = tail;
+          return emit;
+        }
+        break; // no DSML ahead — fall through to normal tag scanning
+      }
+      // dsmlDepth === 1: waiting for the close sentinel.
+      const closeM = DSML_CLOSE_RE.exec(pending);
+      if (closeM) {
+        const block = pending.slice(0, closeM.index + closeM[0].length);
+        pending = dsmlBlockToXml(block) + pending.slice(closeM.index + closeM[0].length);
+        dsmlDepth = 0;
+        pos = 0;
+        continue;
+      }
+      // close sentinel may itself be partial at the tail — hold everything.
+      if (!final) return emit;
+      // Stream ended with an unterminated DSML block: rewrite what we have
+      // (incomplete calls inside drop out as text) and continue.
+      pending = dsmlBlockToXml(pending);
+      dsmlDepth = 0;
+      pos = 0;
+      continue;
+    }
     for (;;) {
       const lt = pending.indexOf('<', pos);
       if (lt === -1) { emit += pending.slice(pos); pos = pending.length; break; }
@@ -1238,7 +1306,7 @@ function createToolStreamFilter(toolNames) {
   }
 
   return {
-    push(text) { pending += normalizeDsml(text); return scan(false); },
+    push(text) { pending += text; return scan(false); },
     flush() { const out = scan(true); const tail = pending; pending = ''; return out + tail; },
     calls,
     unknownTags,

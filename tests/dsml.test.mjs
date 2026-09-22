@@ -72,5 +72,35 @@ const dsmlWrite = [
   chk('unterminated no call', f.calls.length === 0, JSON.stringify(f.calls));
 }
 
+
+
+// 7. STREAMING: sentinel split across chunk boundaries must still convert.
+// This is the live failure mode observed with opencode (stream=true): the
+// per-chunk normalisation saw '<', '<｜', '<｜｜D'... and matched nothing.
+{
+  const f = make(['write']);
+  const FP = String.fromCharCode(0xff5c);
+  const full = [
+    `<${FP}${FP}DSML${FP}${FP} calls>`,
+    `<${FP}${FP}DSML${FP}${FP} invoke name="write">`,
+    `<${FP}${FP}DSML${FP}${FP} parameter name="content" string="true">hi</${FP}${FP}DSML${FP}${FP} parameter>`,
+    `</${FP}${FP}DSML${FP}${FP} invoke>`,
+    `</${FP}${FP}DSML${FP}${FP} calls>`,
+  ].join('');
+  for (const step of [1, 3, 7, 23]) {
+    const g = make(['write']);
+    for (let i = 0; i < full.length; i += step) g.push(full.slice(i, i + step));
+    g.flush();
+    chk(`stream chunk ${step}`, g.calls.length === 1 && g.calls[0].args.content === 'hi', JSON.stringify(g.calls));
+  }
+  // surrounding text survives streaming holds
+  const g2 = make(['write']);
+  const wrapped = `先说明：${full}已完成`;
+  let shown = '';
+  for (let i = 0; i < wrapped.length; i += 5) shown += g2.push(wrapped.slice(i, i + 5));
+  shown += g2.flush();
+  chk('stream wrapped text kept', shown === '先说明：已完成', JSON.stringify(shown));
+}
+
 console.log(bad ? bad + ' BROKEN' : 'dsml: ALL OK');
 process.exit(bad ? 1 : 0);
