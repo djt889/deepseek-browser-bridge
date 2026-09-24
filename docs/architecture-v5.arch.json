@@ -1,0 +1,442 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "DeepSeek Browser Bridge — System Architecture",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "pipeline",
+        "label": "请求处理管线",
+        "focus": [
+          "agents",
+          "gateway",
+          "normalize",
+          "dispatch",
+          "admission",
+          "cdp",
+          "inject",
+          "web"
+        ],
+        "note": "三协议入口 → 协议归一 → 会话模式分流 → 队列 → 准入闸门 → CDP → 页面注入 → DeepSeek 网页。"
+      },
+      {
+        "id": "tooling",
+        "label": "工具调用与回传",
+        "focus": [
+          "web",
+          "inject",
+          "parser",
+          "normalize",
+          "agents"
+        ],
+        "note": "XML 协议注入 + DSML 转换 + 容错解析 → 标准 tool_calls 返回客户端执行。"
+      },
+      {
+        "id": "resilience",
+        "label": "韧性与账号保护",
+        "focus": [
+          "admission",
+          "guard",
+          "session",
+          "panel"
+        ],
+        "note": "配额红线 · 空流升级重试 · 静音长冷却 · 冷却感知路由 · 会话回收。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "agents",
+      "type": "external",
+      "label": "Agent 客户端",
+      "sublabel": "pi · opencode · CCR",
+      "pos": [
+        37,
+        240
+      ],
+      "size": [
+        136,
+        72
+      ],
+      "tag": "多子代理并发"
+    },
+    {
+      "id": "gateway",
+      "type": "security",
+      "label": "API 网关",
+      "sublabel": ":39751 · Key 鉴权",
+      "pos": [
+        210,
+        240
+      ],
+      "size": [
+        132,
+        72
+      ]
+    },
+    {
+      "id": "normalize",
+      "type": "backend",
+      "label": "协议归一层",
+      "sublabel": "OpenAI · Claude · Responses",
+      "pos": [
+        379,
+        240
+      ],
+      "size": [
+        148,
+        72
+      ]
+    },
+    {
+      "id": "dispatch",
+      "type": "backend",
+      "label": "调度队列",
+      "sublabel": "pump() · 会话分流",
+      "pos": [
+        563,
+        240
+      ],
+      "size": [
+        136,
+        72
+      ]
+    },
+    {
+      "id": "admission",
+      "type": "security",
+      "label": "准入闸门",
+      "sublabel": "6 槽 · 90/h · 500/d",
+      "pos": [
+        736,
+        240
+      ],
+      "size": [
+        144,
+        72
+      ],
+      "tag": "冷却感知"
+    },
+    {
+      "id": "cdp",
+      "type": "cloud",
+      "label": "CDP 总线",
+      "sublabel": "每账号一链路",
+      "pos": [
+        913,
+        240
+      ],
+      "size": [
+        124,
+        72
+      ]
+    },
+    {
+      "id": "inject",
+      "type": "backend",
+      "label": "页面注入层",
+      "sublabel": "PoW · SSE · 静音识别",
+      "pos": [
+        1071,
+        240
+      ],
+      "size": [
+        140,
+        72
+      ]
+    },
+    {
+      "id": "web",
+      "type": "external",
+      "label": "DeepSeek Web",
+      "sublabel": "chat.deepseek.com",
+      "pos": [
+        1071,
+        96
+      ],
+      "size": [
+        140,
+        64
+      ]
+    },
+    {
+      "id": "parser",
+      "type": "backend",
+      "label": "工具解析器",
+      "sublabel": "XML · DSML · JSON 修复",
+      "pos": [
+        563,
+        396
+      ],
+      "size": [
+        152,
+        72
+      ],
+      "tag": "流式容错"
+    },
+    {
+      "id": "guard",
+      "type": "security",
+      "label": "韧性防线",
+      "sublabel": "空流重试链 · 错误上抛",
+      "pos": [
+        379,
+        396
+      ],
+      "size": [
+        144,
+        72
+      ]
+    },
+    {
+      "id": "session",
+      "type": "database",
+      "label": "会话存储",
+      "sublabel": "前缀哈希 · 6h 回收",
+      "pos": [
+        210,
+        396
+      ],
+      "size": [
+        140,
+        72
+      ]
+    },
+    {
+      "id": "panel",
+      "type": "frontend",
+      "label": "管理面板",
+      "sublabel": "号池 · 日志 · 清扫",
+      "pos": [
+        37,
+        396
+      ],
+      "size": [
+        132,
+        72
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Browser Bridge（本机 · 127.0.0.1）",
+      "wraps": [
+        "gateway",
+        "normalize",
+        "dispatch",
+        "admission",
+        "cdp",
+        "parser",
+        "guard",
+        "session",
+        "panel"
+      ],
+      "pad": 22
+    },
+    {
+      "kind": "security-group",
+      "label": "Chrome 页面上下文 · 真实指纹出网",
+      "wraps": [
+        "inject",
+        "web"
+      ],
+      "pad": 14
+    }
+  ],
+  "connections": [
+    {
+      "from": "agents",
+      "to": "gateway",
+      "label": "/v1/*",
+      "variant": "emphasis",
+      "labelAt": [
+        191,
+        280
+      ]
+    },
+    {
+      "from": "gateway",
+      "to": "normalize"
+    },
+    {
+      "from": "normalize",
+      "to": "dispatch"
+    },
+    {
+      "from": "dispatch",
+      "to": "admission"
+    },
+    {
+      "from": "admission",
+      "to": "cdp"
+    },
+    {
+      "from": "cdp",
+      "to": "inject",
+      "label": "CDP RPC",
+      "variant": "emphasis",
+      "labelAt": [
+        1054,
+        232
+      ]
+    },
+    {
+      "from": "inject",
+      "to": "web",
+      "label": "页面自身 fetch",
+      "variant": "emphasis",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "from": "cdp",
+      "to": "parser",
+      "label": "流式响应回传",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          975.0,
+          352
+        ],
+        [
+          639.0,
+          352
+        ]
+      ],
+      "labelAt": [
+        800,
+        330
+      ]
+    },
+    {
+      "from": "parser",
+      "to": "agents",
+      "label": "tool_calls / SSE",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "left",
+      "via": [
+        [
+          639,
+          520
+        ],
+        [
+          16,
+          520
+        ],
+        [
+          16,
+          276
+        ]
+      ],
+      "labelAt": [
+        360,
+        528
+      ]
+    },
+    {
+      "from": "parser",
+      "to": "guard",
+      "label": "结果裁决",
+      "labelAt": [
+        508,
+        352
+      ]
+    },
+    {
+      "from": "guard",
+      "to": "normalize",
+      "label": "空流重放",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelAt": [
+        408,
+        340
+      ]
+    },
+    {
+      "from": "guard",
+      "to": "agents",
+      "label": "DQ_EMPTY_ANSWER",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "left",
+      "via": [
+        [
+          451,
+          560
+        ],
+        [
+          16,
+          560
+        ],
+        [
+          16,
+          276
+        ]
+      ],
+      "labelAt": [
+        170,
+        568
+      ]
+    },
+    {
+      "from": "normalize",
+      "to": "session",
+      "label": "前缀命中续聊",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        590,
+        366
+      ]
+    },
+    {
+      "from": "panel",
+      "to": "gateway",
+      "label": "admin API",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelAt": [
+        96,
+        340
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "请求管线",
+      "items": [
+        "三协议归一为统一消息模型，双模式会话分流",
+        "全部出网请求由真实 Chrome 页面 fetch 发出",
+        "准入闸门执行配额红线与冷却感知路由"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "工具调用链",
+      "items": [
+        "XML 协议注入（提醒置于提示词末尾）",
+        "DSML 私有格式识别并转换为标准 tool_calls",
+        "截断透传 · 尾逗号/路径/单引号 JSON 修复"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "韧性设计",
+      "items": [
+        "空流重试×2 递进（20s）→ 仍空报错不糊弄",
+        "静音识别（mute_until）长冷却 · 封号自动摘除",
+        "会话 6h 回收 · 断开优雅停止 · 映射自愈"
+      ]
+    }
+  ]
+}

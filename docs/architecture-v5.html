@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="generator" content="archify 2.17.0-dev.1">
-  <title>DeepSeek Browser Bridge 详细架构</title>
+  <title>DeepSeek Browser Bridge — System Architecture</title>
   <script>
     // Resolve the theme before first paint so light-preference users don't
     // see a dark flash. The toolbar script below re-applies with UI state.
@@ -5081,11 +5081,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
            data-preset-badge-blueprint="蓝图 / 修订 01"
            data-preset-badge-editorial="编辑风格 / 现场笔记">
         <div class="pulse-dot"></div>
-        <h1>DeepSeek Browser Bridge 详细架构</h1>
+        <h1>DeepSeek Browser Bridge — System Architecture</h1>
       </div>
     </div>
 
-    <script id="archify-guided-views-data" type="application/json">[{"id":"main-path","label":"主请求链路","focus":["clients","gateway","ep_openai","ep_anthropic","ep_responses","internal","sched","throttle","cdp","inject","deepseek"],"note":"客户端 → 协议适配 → 排队 → 账号级节流 → CDP → 页面注入 → DeepSeek 网页版。"},{"id":"keepalive","label":"保号与号池","focus":["throttle","sched","cdp","auth","sessions"],"note":"速率闸门、换号轮换，以及本地凭据与会话状态文件。"},{"id":"tools-reply","label":"工具调用与回传","focus":["tools","internal","stream","deepseek","clients"],"note":"XML 工具协议注入与解析，以及三协议响应分流回传。"}]</script>
+    <script id="archify-guided-views-data" type="application/json">[{"id":"pipeline","label":"请求处理管线","focus":["agents","gateway","normalize","dispatch","admission","cdp","inject","web"],"note":"三协议入口 → 协议归一 → 会话模式分流 → 队列 → 准入闸门 → CDP → 页面注入 → DeepSeek 网页。"},{"id":"tooling","label":"工具调用与回传","focus":["web","inject","parser","normalize","agents"],"note":"XML 协议注入 + DSML 转换 + 容错解析 → 标准 tool_calls 返回客户端执行。"},{"id":"resilience","label":"韧性与账号保护","focus":["admission","guard","session","panel"],"note":"配额红线 · 空流升级重试 · 静音长冷却 · 冷却感知路由 · 会话回收。"}]</script>
 
     <script id="archify-i18n-data" type="application/json">{"locale":"zh-CN","messages":{"viewer.kind.frontend":"前端","viewer.kind.backend":"后端","viewer.kind.database":"数据库","viewer.kind.cloud":"云服务","viewer.kind.security":"安全","viewer.kind.messagebus":"消息总线","viewer.kind.external":"外部系统","viewer.kind.neutral":"中性","viewer.kind.node":"节点","viewer.kind.start":"开始","viewer.kind.active":"活动","viewer.kind.waiting":"等待","viewer.kind.decision":"决策","viewer.kind.success":"成功","viewer.kind.failure":"失败","viewer.toolbar.actions":"图表操作","viewer.theme.toggle.title":"切换主题（T）","viewer.theme.toggle":"切换颜色主题","viewer.theme.dark":"深色","viewer.theme.light":"浅色","viewer.preset.choose.title":"选择视觉风格（S 循环切换）","viewer.preset.choose":"选择视觉风格","viewer.preset.style":"风格","viewer.preset.menu":"视觉风格","viewer.preset.identity":"视觉表达","viewer.preset.cycles":"S 循环切换","viewer.preset.classic":"经典","viewer.preset.classic.short":"经典","viewer.preset.classic.hint":"稳定的技术默认风格","viewer.preset.flow":"信号流","viewer.preset.flow.short":"流动","viewer.preset.flow.hint":"突出动态流向","viewer.preset.blueprint":"蓝图","viewer.preset.blueprint.hint":"工程评审","viewer.preset.editorial":"编辑风格","viewer.preset.editorial.hint":"适合发布与上线说明","viewer.preset.badge.signalFlow":"信号流","viewer.preset.badge.blueprint":"蓝图 / 修订 01","viewer.preset.badge.editorial":"编辑风格 / 现场笔记","viewer.preset.badge.editorialPlate":"ARCHIFY / 图版 04","viewer.preset.current":"当前视觉风格：{style}。选择视觉风格","viewer.motion.live":"动态","viewer.motion.still":"静态","viewer.motion.pause":"暂停动效","viewer.motion.resume":"恢复动效","viewer.motion.reduced":"已根据减少动态效果偏好暂停动效","viewer.motion.hidden":"页面不可见时已暂停动效","viewer.motion.yielding":"暂停动效；当前让位于{owner}","viewer.motion.yielding.title":"动态预览已启用 · 正在让位于{owner}","viewer.owner.story":"引导故事","viewer.owner.chapter":"当前章节","viewer.owner.chapterPreview":"章节差异预览","viewer.owner.handoff":"章节交接","viewer.owner.route":"路径探测","viewer.owner.lens":"语义透镜","viewer.owner.relationship":"关系预览","viewer.owner.intent":"意图追踪","viewer.owner.focus":"语义聚焦","viewer.owner.legend":"图例预览","viewer.owner.reader":"读者交互","viewer.present.enter":"进入演示模式","viewer.present.enter.title":"演示模式（F）","viewer.present.exit":"退出演示模式","viewer.present.exit.title":"退出演示模式（F 或 Escape）","viewer.present.present":"演示","viewer.present.exit.label":"退出","viewer.export.button":"导出","viewer.export.button.title":"导出图表（E）","viewer.export.diagram":"导出图表","viewer.export.menu":"导出","viewer.export.subtitle":"便携、整洁的输出","viewer.export.share":"分享","viewer.export.shareCard":"分享卡片","viewer.export.routeShareCard":"路径分享卡片","viewer.export.reachShareCard":"可达范围分享卡片","viewer.export.copyShareCard":"复制分享卡片","viewer.export.copyDiagram":"复制图表","viewer.export.clipboardPng":"复制 PNG 到剪贴板","viewer.export.raster":"位图","viewer.export.image":"图像","viewer.export.lossless":"无损图像","viewer.export.compact":"紧凑图像","viewer.export.modern":"现代图像格式","viewer.export.vectorMotion":"矢量与动效","viewer.export.vectorMotion.heading":"矢量与动效","viewer.export.editable":"可编辑矢量图","viewer.export.motion6s":"6 秒动效","viewer.export.unsupported":"当前浏览器不支持","viewer.export.clipboardUnsupported":"当前浏览器不支持写入图片剪贴板","viewer.export.clipboardUnsupported.period":"当前浏览器不支持写入图片剪贴板。","viewer.export.clipboardUnsupported.short":"此浏览器不支持写入图片剪贴板。","viewer.export.motionUnavailable":"当前浏览器无法录制动效","viewer.export.webmUnavailable":"当前浏览器不支持 WebM","viewer.export.failed":"导出失败：{message}","viewer.export.unknownVariant":"未知的分享卡片类型：{variant}","viewer.export.routeRequired":"请先追踪路径，再导出路径分享卡片","viewer.export.reachRequired":"请先追踪编写可达范围，再导出可达范围分享卡片","viewer.export.unknown":"未知错误","viewer.export.routeFailed":"路径分享卡片导出失败：{message}","viewer.export.reachFailed":"可达范围分享卡片导出失败：{message}","viewer.export.copyFailed":"复制失败：{message}","viewer.export.copiedPng":"已将 PNG 复制到剪贴板","viewer.export.copiedShare":"已复制分享卡片","viewer.export.downloadedShare":"已下载分享卡片","viewer.export.downloadedRoute":"已下载路径分享卡片","viewer.export.downloadedReach":"已下载可达范围分享卡片","viewer.export.downloadedWebm":"已下载 WebM","viewer.export.recording":"正在录制 6 秒动效…","viewer.export.card.routeSummary.one":"路径：{source} → {target} · {count} 个有向跳转","viewer.export.card.routeSummary.other":"路径：{source} → {target} · {count} 个有向跳转","viewer.export.card.reachSummary":"从{origin}开始的编写{direction} · {nodes} · {links} · 最深 {hops}","viewer.export.card.node.one":"{count} 个节点","viewer.export.card.node.other":"{count} 个节点","viewer.export.card.link.one":"{count} 条连接","viewer.export.card.link.other":"{count} 条连接","viewer.export.card.hop.one":"{count} 跳","viewer.export.card.hop.other":"{count} 跳","viewer.export.card.routeBadge":"ARCHIFY · 路径 · {hops}","viewer.export.card.reachBadge":"ARCHIFY · {direction}可达范围","viewer.export.card.defaultBadge":"ARCHIFY · {preset} · {theme}","viewer.export.direction.upstream":"上游","viewer.export.direction.downstream":"下游","viewer.export.error.canvasUnavailable":"无法为{label}使用画布","viewer.export.error.contextUnavailable":"无法为{label}创建二维画布上下文","viewer.export.error.toBlobUnavailable":"{label}无法使用 canvas.toBlob","viewer.export.error.toBlobNull":"{label}的 canvas.toBlob 未返回数据","viewer.export.error.variantsCombined":"无法同时组合多种分享卡片类型","viewer.export.error.viewerState":"分享卡片导出无法移除临时 Viewer 状态","viewer.export.error.routeState":"路径卡片导出无法安全保留已解析路径","viewer.export.error.reachState":"可达范围卡片导出无法安全保留编写的可达范围","viewer.export.error.webmRequirements":"WebM 动效导出需要追踪动画及浏览器 MediaRecorder 支持","viewer.export.error.mediaRecorder":"MediaRecorder 录制失败","viewer.export.error.emptyWebm":"MediaRecorder 生成了空的 WebM","viewer.export.error.webmBackground":"无法为 WebM 导出加载 SVG 背景","viewer.guided.region":"图表引导视图","viewer.guided.previous":"上一个引导视图","viewer.guided.previous.title":"上一个引导视图（[）","viewer.guided.next":"下一个引导视图","viewer.guided.next.title":"下一个引导视图（]）","viewer.guided.views":"引导视图","viewer.guided.explore":"探索此系统","viewer.guided.intro":"沿精选路径逐步查看，而不改变源图表。","viewer.guided.trail":"故事轨迹","viewer.guided.beat":"节点","viewer.guided.nextBeat":"下一步","viewer.guided.play":"播放引导故事","viewer.guided.play.title":"播放引导故事（P）","viewer.guided.pause":"暂停引导故事","viewer.guided.pause.title":"暂停引导故事（P）","viewer.guided.replay":"重播引导故事","viewer.guided.replay.title":"重播引导故事（P）","viewer.guided.playStory":"播放故事","viewer.guided.pauseStory":"暂停","viewer.guided.replayStory":"重播故事","viewer.guided.motionUnavailable":"静态模式下无法播放故事","viewer.guided.enableMotion":"切换为动态模式以播放引导故事","viewer.guided.selectBeatLink":"选择故事节点以复制其精确链接","viewer.guided.copyMoment":"复制此刻","viewer.guided.momentCopied":"已复制时刻链接","viewer.guided.momentCopyFailed":"无法复制故事时刻链接","viewer.guided.copied":"已复制","viewer.guided.copyFailed":"复制失败","viewer.guided.showAll":"显示全部","viewer.guided.showAll.aria":"显示完整图表","viewer.guided.chapters":"故事章节","viewer.guided.storyTrail":"{label}的故事轨迹：{count} 个节点","viewer.guided.chapter.open":"打开第 {index}/{total} 章：{label}，{count} 个停靠点","viewer.guided.chapter.current":"当前第 {index}/{total} 章：{label}，{count} 个停靠点","viewer.guided.chapter.selectedNodes":"已选择 {count} 个节点","viewer.guided.chapter.stops":"{count} 个停靠点","viewer.guided.chapter.stop.one":"{count} 个停靠点","viewer.guided.chapter.stop.other":"{count} 个停靠点","viewer.guided.chapter.current.title":"{label} — 当前章节，{count} 个停靠点","viewer.guided.chapter.delta.expanded":"{stay} 个保留，{enter} 个进入，{leave} 个离开","viewer.guided.chapter.delta.aria":"打开第 {index}/{total} 章：{label}。章节聚焦差异：{delta}","viewer.guided.chapter.delta.title":"{label} — 章节聚焦 {delta}","viewer.guided.handoff":"{from} → {to} · 经由{label}","viewer.guided.share.chapter":"章节 {index} / {total}","viewer.guided.share.initial":"章节 01 / 01","viewer.guided.share.default":"引导章节","viewer.guided.state.ready":"就绪","viewer.guided.state.playing":"播放中","viewer.guided.state.settled":"已完成","viewer.guided.state.paused":"已暂停","viewer.guided.state.pinned":"已固定","viewer.guided.state.still":"静态","viewer.guided.share.step":"步骤 {index} / {total} · {label}","viewer.guided.share.staticMoment":"{step} · 静态时刻","viewer.guided.share.complete":"{count} 个步骤已完成 · {note}","viewer.guided.share.settled":"路径已稳定，可供阅读。","viewer.guided.share.staticPath":"{count} 个步骤 · 静态路径","viewer.guided.share.ready":"{count} 个步骤 · 就绪","viewer.guided.share.aria":"{state}，第 {index}/{total} 章：{label}。{beat}。{route}","viewer.guided.beat.start":"节点 {index} / {total} · {label} · 起点","viewer.guided.beat.forward":"节点 {index} / {total} · {from} → {to}","viewer.guided.beat.reverse":"节点 {index} / {total} · {from} → {to} · 反向编写连接","viewer.guided.beat.multiple":"节点 {index} / {total} · {from} ⇄ {to} · {count} 条编写连接","viewer.guided.beat.group":"节点 {index} / {total} · {from} · {to} · 分组 · 无直接连接","viewer.guided.beat.aria.prefix":"故事节点 {index}/{total}：{label}。","viewer.guided.beat.aria.start":"起点。","viewer.guided.beat.aria.forward":"从{from}经一条正向编写关系到达。","viewer.guided.beat.aria.reverse":"从{from}出发；编写关系实际由{to}指向{from}。","viewer.guided.beat.aria.multiple":"从{from}经 {count} 条编写关系到达；不使用任意动效。","viewer.guided.beat.aria.group":"与{from}分组展示，没有直接编写关系。","viewer.guided.caption.start":"起点","viewer.guided.caption.grouped":"分组过渡 · 无直接编写连接","viewer.guided.caption.more":" +另外 {count} 条","viewer.guided.caption.reverse":"反向编写关系","viewer.guided.caption.relationships":"{count} 条编写关系","viewer.guided.caption.relationship":"编写关系","viewer.guided.caption.direction":"编写方向：{from} → {to}","viewer.guided.caption.starting":"编写起点","viewer.guided.beatLink":"复制当前故事时刻链接：第 {index}/{total} 个节点：{label}","viewer.guided.noStory":"此图表没有编写引导故事。","viewer.guide.eyebrow":"图表指南","viewer.guide.close":"关闭图表指南","viewer.guide.inspecting":"正在检查已编译语义","viewer.guide.actions":"图表探索操作","viewer.guide.find":"查找任意节点","viewer.guide.find.hint":"搜索标签、职责、类型和稳定 ID。","viewer.guide.route":"追踪路径","viewer.guide.route.aria":"追踪有向路径","viewer.guide.route.hint":"查看两个语义节点如何按编写方向连接。","viewer.guide.map":"查看完整系统","viewer.guide.map.hint":"打开带实时视口和稳定节点的语义雷达。","viewer.guide.lens":"比较语义类型","viewer.guide.lens.hint":"统计角色、显示流量并比较直接编写的连接。","viewer.guide.story":"播放引导故事","viewer.guide.story.hint":"浏览已编写的章节和真实关系。","viewer.guide.present":"进入演示模式","viewer.guide.present.hint":"让实时图表占满视口，同时不改变导出。","viewer.guide.shortcuts":"其他键盘快捷键","viewer.guide.shortcut.export":"导出","viewer.guide.shortcut.theme":"主题","viewer.guide.shortcut.style":"风格","viewer.guide.shortcut.reset":"重置","viewer.guide.shortcut.zoomIn":"放大","viewer.guide.shortcut.zoomOut":"缩小","viewer.guide.shortcut.close":"关闭","viewer.guide.facts":"{nodes} · {relationships} · {views}","viewer.guide.fact.node.one":"{count} 个语义节点","viewer.guide.fact.node.other":"{count} 个语义节点","viewer.guide.fact.relationship.one":"{count} 条关系","viewer.guide.fact.relationship.other":"{count} 条关系","viewer.guide.fact.view.one":"{count} 个引导视图","viewer.guide.fact.view.other":"{count} 个引导视图","viewer.guide.story.available.one":"浏览 {count} 个已编写章节及其真实关系。","viewer.guide.story.available.other":"浏览 {count} 个已编写章节及其真实关系。","viewer.guide.story.unavailable":"此图表没有编写引导故事。","viewer.guide.open":"打开图表指南","viewer.guide.noStory":"此图表没有编写引导故事。","viewer.finder.title":"查找节点","viewer.finder.close":"关闭节点查找器","viewer.finder.placeholder":"搜索标签或 ID","viewer.finder.search":"搜索图表节点","viewer.finder.results":"图表节点","viewer.finder.empty":"没有匹配的节点","viewer.finder.result.focus":"聚焦{label}","viewer.finder.result.routeStart":"选择{label}作为路径起点","viewer.finder.result.routeTarget":"选择{label}作为路径终点，{links}","viewer.finder.status.empty":"没有匹配的节点","viewer.finder.status.count.one":"{count} 个匹配节点","viewer.finder.status.count.other":"{count} 个匹配节点","viewer.finder.noun.nodes":"个节点","viewer.finder.link.one":"{count} 条连接","viewer.finder.link.other":"{count} 条连接","viewer.finder.result.focus.one":"聚焦{label}，{count} 条相关连接","viewer.finder.result.focus.other":"聚焦{label}，{count} 条相关连接","viewer.finder.status.filtered":"{visible}/{available} {noun}","viewer.finder.status.all":"{available} {noun}","viewer.passport.eyebrow":"语义护照","viewer.passport.metadata":"节点元数据","viewer.passport.evidence":"已验证的源代码证据","viewer.passport.verified":"已验证来源","viewer.passport.verificationScope":"已按固定修订版本验证本地 Git 证据，未检查远程访问权限。","viewer.passport.reach":"编写可达范围","viewer.passport.reach.trace":"追踪编写的可达性","viewer.passport.upstream":"上游","viewer.passport.downstream":"下游","viewer.passport.upstream.trace":"追踪上游编写可达性","viewer.passport.downstream.trace":"追踪下游编写可达性","viewer.passport.close":"关闭语义护照","viewer.passport.copy":"复制链接","viewer.passport.copy.focus":"复制聚焦节点的链接","viewer.passport.relations":"关系","viewer.passport.relations.show":"显示关联关系","viewer.passport.relations.hide":"隐藏关联关系","viewer.passport.relations.list":"关联关系","viewer.passport.copyRelation":"复制关系","viewer.passport.copyNode":"复制节点","viewer.passport.copyPinned":"复制固定关系的链接","viewer.passport.copySource":"复制来源节点的链接","viewer.passport.copy.focused.success":"已复制聚焦节点链接","viewer.passport.copy.pinned.success":"已复制固定关系链接","viewer.passport.copy.focused.failed":"无法复制聚焦节点链接","viewer.passport.copy.pinned.failed":"无法复制固定关系链接","viewer.passport.relationship.none":"没有关联关系","viewer.passport.relationship.count.one":"{count} 条关系","viewer.passport.relationship.count.other":"{count} 条关系","viewer.passport.relationship.show.one":"显示 {count} 条关联关系","viewer.passport.relationship.show.other":"显示 {count} 条关联关系","viewer.passport.relationship.summary":"{out} 条出向 · {in} 条入向{loops}","viewer.passport.relationship.loops":" · {count} 条自环","viewer.passport.relationship.explorer":"直接关系浏览器","viewer.passport.relationship.help":"使用方向键浏览关系。按 Enter 或空格键固定详情；按 Escape 清除。","viewer.passport.relationship.loopsBack":"回环","viewer.passport.relationship.connectsTo":"连接到","viewer.passport.relationship.connectsFrom":"连接自","viewer.passport.relationship.pinned":"已固定关系 · {from} → {to} · {label}","viewer.passport.relationship.inspect":"检查第 {index}/{total} 条关系：{from} 到 {to}，{label}。按 Enter 查看详情。","viewer.passport.relationship.group.out":"出向","viewer.passport.relationship.group.in":"入向","viewer.passport.relationship.group.loop":"自环","viewer.passport.relationship.row":"{group}：{relationship}，{neighbor}","viewer.passport.relationship.direction.out":"出 →","viewer.passport.relationship.direction.in":"← 入","viewer.passport.relationship.direction.loop":"自环","viewer.passport.sourceCount.one":"{count} 个已验证来源引用","viewer.passport.sourceCount.other":"{count} 个已验证来源引用","viewer.passport.sourceMarker":"来源","viewer.passport.beacon.one":"{count} 个已验证来源；聚焦此节点以检查","viewer.passport.beacon.other":"{count} 个已验证来源；聚焦此节点以检查","viewer.passport.repository.open":"打开已验证的仓库修订版本 {revision}","viewer.passport.source.open":"打开修订版本 {revision} 中已验证的来源 {path}","viewer.passport.source.openLink":"打开 ↗","viewer.passport.reach.upstream.one":"追踪 {count} 个上游编写节点","viewer.passport.reach.upstream.other":"追踪 {count} 个上游编写节点","viewer.passport.reach.downstream.one":"追踪 {count} 个下游编写节点","viewer.passport.reach.downstream.other":"追踪 {count} 个下游编写节点","viewer.passport.reach.noUpstream":"没有上游编写节点","viewer.passport.reach.noDownstream":"没有下游编写节点","viewer.passport.reach.status":"{direction} · {nodes} 个节点 · {links} 条连接 · 最深 {hops} 跳","viewer.route.eyebrow":"路径探测","viewer.route.start":"选择起点节点","viewer.route.start.find":"查找起点","viewer.route.start.find.aria":"查找路径起点","viewer.route.copy":"复制链接","viewer.route.copy.aria":"复制已追踪路径的链接","viewer.route.clear":"清除","viewer.route.clear.aria":"清除路径探测","viewer.route.traced":"已追踪路径","viewer.route.pickTwo":"在图表中选择两个语义节点","viewer.route.pickOne":"在图表中选择一个语义节点","viewer.route.controls":"路径旅程控制","viewer.route.previous":"上一个路径位置","viewer.route.play":"播放路径旅程","viewer.route.pause":"暂停路径旅程","viewer.route.replay":"重播路径旅程","viewer.route.next":"下一个路径位置","viewer.route.journey":"旅程","viewer.route.pause.label":"暂停","viewer.route.replay.label":"重播","viewer.route.overview":"总览","viewer.route.overview.aria":"显示完整路径总览","viewer.route.instructions":"先选择来源，再选择目标；方向很重要。","viewer.route.destination":"选择从{label}出发的目标","viewer.route.destination.find":"查找目标","viewer.route.destination.find.aria":"查找可达的路径目标","viewer.route.differentDestination":"选择其他目标","viewer.route.distinct":"一条路径需要两个不同的语义节点。","viewer.route.unreachable":"没有通往{label}的有向路径","viewer.route.unreachable.detail":"从{source}无法到达{target}。请选择高亮的目标。","viewer.route.start.instructions":"选择来源。下一步只会显示有向可达的目标。","viewer.route.copy.success":"已复制路径链接","viewer.route.copy.failed":"无法复制路径链接","viewer.route.position":"路径位置 {index}/{total}：{label}","viewer.route.step":"第 {index}/{total} 步 · {phase} · {label}","viewer.route.motionRequired":"自动旅程需要动态模式","viewer.route.trigger.clear":"清除已追踪路径","viewer.route.overview.status":"{nodes} · {hops} · 最短编写路径","viewer.route.overview.node.one":"{count} 个节点","viewer.route.overview.node.other":"{count} 个节点","viewer.route.overview.hop.one":"{count} 个有向跳转","viewer.route.overview.hop.other":"{count} 个有向跳转","viewer.route.phase.playing":"播放中","viewer.route.phase.complete":"已完成","viewer.route.phase.inspecting":"检查中","viewer.route.destination.count.one":"有 {count} 个有向目标可用。请选择高亮节点。","viewer.route.destination.count.other":"有 {count} 个有向目标可用。请选择高亮节点。","viewer.route.noOutgoing":"此处没有可用的出向路径。请清除后选择其他来源。","viewer.route.result.title":"{source} 到 {target}","viewer.route.finder.source.title":"选择路径起点","viewer.route.finder.source.placeholder":"搜索路径来源","viewer.route.finder.source.empty":"没有匹配的路径来源","viewer.route.finder.source.results":"可作为路径起点的节点","viewer.route.finder.source.noun":"个路径来源","viewer.route.finder.source.badge":"起点","viewer.route.finder.target.title":"从{label}出发的目标","viewer.route.finder.target.placeholder":"搜索可达目标","viewer.route.finder.target.empty":"没有匹配的可达目标","viewer.route.finder.target.results":"可达路径目标","viewer.route.finder.target.noun":"个可达目标","viewer.route.hop.one":"{count} 跳","viewer.route.hop.other":"{count} 跳","viewer.lens.eyebrow":"语义透镜","viewer.lens.title":"比较系统角色","viewer.lens.close":"关闭语义透镜","viewer.lens.instruction":"最多选择两种语义类型。选择一种可显示其真实流量；选择两种只比较直接编写的关系。","viewer.lens.kinds":"语义类型","viewer.lens.choose":"选择一种类型以检查其节点和相连关系。","viewer.lens.copy":"复制语义透镜链接","viewer.lens.clear":"清除语义透镜","viewer.lens.open":"打开语义透镜","viewer.lens.openActive":"打开当前语义透镜","viewer.lens.legend":"语义图例","viewer.lens.legend.inspect.one":"检查{label}，{count} 个节点","viewer.lens.legend.inspect.other":"检查{label}，{count} 个节点","viewer.lens.kind.count.one":"{label}，{count} 个节点","viewer.lens.kind.count.other":"{label}，{count} 个节点","viewer.lens.compare.one":"{first} → {second}：{forward} · {second} → {first}：{reverse} · 共 {count} 条直接关系","viewer.lens.compare.other":"{first} → {second}：{forward} · {second} → {first}：{reverse} · 共 {count} 条直接关系","viewer.lens.single":"{nodes} · {relationships} · 已连接节点保持可见","viewer.lens.node.one":"{count} 个{label}节点","viewer.lens.node.other":"{count} 个{label}节点","viewer.lens.relationship.one":"{count} 条相连关系","viewer.lens.relationship.other":"{count} 条相连关系","viewer.radar.title":"语义雷达","viewer.radar.building":"正在构建总览","viewer.radar.openFull":"打开完整语义雷达","viewer.radar.open":"打开雷达","viewer.radar.close":"关闭语义雷达","viewer.radar.surface":"图表总览。点击节点进行聚焦，或使用方向键平移。","viewer.radar.click":"点击节点","viewer.radar.drag":"拖动平移","viewer.radar.space":"语义雷达需要更多地图可见空间。","viewer.radar.nodes":"语义图表雷达节点","viewer.radar.focus":"从语义雷达聚焦{label}","viewer.radar.status":"{count} 个节点 · {viewport}","viewer.radar.fullMap":"{count} 个节点 · 完整地图","viewer.radar.compacted":"已收紧雷达，避免遮挡语义护照或地图控件。","viewer.radar.cancelWaiting":"取消等待更多地图空间的语义雷达","viewer.radar.needsSpace":"语义雷达需要更多可见地图空间","viewer.radar.viewport.full":"完整地图","viewer.radar.viewport.width":"宽度 {percent}%","viewer.radar.viewport.scale":"视口 {percent}%","viewer.nav.controls":"图表视图控制","viewer.nav.route":"追踪有向路径","viewer.nav.route.title":"追踪路径（R）","viewer.nav.route.short":"路径","viewer.nav.radar":"打开语义雷达","viewer.nav.radar.title":"语义雷达（M）","viewer.nav.radar.short":"地图","viewer.nav.lens":"打开语义透镜","viewer.nav.lens.title":"语义透镜（L）","viewer.nav.lens.short":"透镜","viewer.nav.find":"查找节点","viewer.nav.find.title":"查找节点（/）","viewer.nav.guide":"打开图表指南","viewer.nav.guide.title":"图表指南（?）","viewer.nav.zoomOut":"缩小","viewer.nav.zoomOut.title":"缩小（-）","viewer.nav.reset":"重置图表视图","viewer.nav.reset.title":"重置视图（0）","viewer.nav.read":"阅读","viewer.nav.zoomIn":"放大","viewer.nav.zoomIn.title":"放大（+）","viewer.nav.camera":"{hint}。重置图表视图","viewer.nav.camera.title":"{semantic}{hint} · 重置视图（0）","viewer.nav.camera.semantic":"语义相机已启用 · ","viewer.nav.level.map":"概览","viewer.nav.level.read":"阅读","viewer.nav.level.full":"完整","viewer.nav.level.auto":"自动","viewer.nav.detail.map":"放大以显示关系标签和节点上下文","viewer.nav.detail.read":"再次放大以显示标签和注释","viewer.nav.detail.full":"完整图表详情","viewer.intent.summary":"{label}。{out} 条出向，{in} 条入向{loops}。共 {total} 条连接。按 Enter 查看详情。","viewer.intent.loops":"，{count} 条自环","viewer.common.copied":"已复制","viewer.common.copyFailed":"复制失败","viewer.common.copyLink":"复制链接","viewer.common.clear":"清除","viewer.common.close":"关闭"}}</script>
     <div class="guided-views no-print" id="guided-views" hidden aria-label="图表引导视图">
@@ -5130,8 +5130,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     <!-- Main Diagram -->
     <div class="diagram-container" data-detail-level="read"
          data-preset-badge-editorial-plate="ARCHIFY / 图版 04">
-      <svg viewBox="0 0 1314 758" role="img" lang="zh-CN" aria-labelledby="archify-diagram-title archify-diagram-description" data-preset="classic" data-quality-profile="showcase">
-        <title id="archify-diagram-title">DeepSeek Browser Bridge 详细架构</title>
+      <svg viewBox="0 0 1269 556" role="img" lang="zh-CN" aria-labelledby="archify-diagram-title archify-diagram-description" data-preset="classic" data-quality-profile="showcase">
+        <title id="archify-diagram-title">DeepSeek Browser Bridge — System Architecture</title>
         <desc id="archify-diagram-description">由 Archify 生成的架构图。</desc>
         <!-- Definitions -->
         <defs>
@@ -5156,329 +5156,230 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <rect width="100%" height="100%" fill="url(#grid)" />
 
         <!-- Boundaries (behind everything) -->
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="0" data-composition-frame-label="本机回环 127.0.0.1（可信区）" x="194" y="122" width="827" height="568" rx="12" class="c-region" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="0" data-composition-frame-label="Browser Bridge（本机 · 127.0.0.1）" x="15" y="216" width="1044" height="272" rx="12" class="c-region" stroke-width="1"/>
 
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="security-group" data-composition-frame-id="1" data-composition-frame-label="Chrome 页面上下文" x="1096" y="406" width="178" height="124" rx="8" class="c-security-group" stroke-width="1"/>
-
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="2" data-composition-frame-label="公网 DeepSeek 服务端" x="1036" y="186" width="178" height="124" rx="12" class="c-region" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="security-group" data-composition-frame-id="1" data-composition-frame-label="Chrome 页面上下文 · 真实指纹出网" x="1053.403861367742" y="72" width="175.19227726451612" height="260" rx="8" class="c-security-group" stroke-width="1"/>
 
         <!-- Connection paths (before components for correct z-order) -->
-        <path data-edge-from="clients" data-edge-to="gateway" data-edge-label="POST /v1/*" data-edge-key="0" data-edge-id="clients-gateway" data-composition-points="180,250;210,250" d="M 180 250 L 210 250" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="gateway" data-edge-to="ep_openai" data-edge-key="1" data-edge-id="gateway-ep-openai" data-composition-points="380,236;392.5,236;392.5,176;405,176" d="M 380 236 L 386.25 236 Q 392.5 236 392.5 229.75 L 392.5 182.25 Q 392.5 176 398.75 176 L 405 176" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="gateway" data-edge-to="ep_anthropic" data-edge-key="2" data-edge-id="gateway-ep-anthropic" data-composition-points="380,250;405,250" d="M 380 250 L 405 250" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="gateway" data-edge-to="ep_responses" data-edge-key="3" data-edge-id="gateway-ep-responses" data-composition-points="380,264;392.5,264;392.5,320;405,320" d="M 380 264 L 386.25 264 Q 392.5 264 392.5 270.25 L 392.5 313.75 Q 392.5 320 398.75 320 L 405 320" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="ep_openai" data-edge-to="internal" data-edge-key="4" data-edge-id="ep-openai-internal" data-composition-points="560,176;572.5,176;572.5,236;585,236" d="M 560 176 L 566.25 176 Q 572.5 176 572.5 182.25 L 572.5 229.75 Q 572.5 236 578.75 236 L 585 236" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="ep_anthropic" data-edge-to="internal" data-edge-key="5" data-edge-id="ep-anthropic-internal" data-composition-points="560,250;585,250" d="M 560 250 L 585 250" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="ep_responses" data-edge-to="internal" data-edge-key="6" data-edge-id="ep-responses-internal" data-composition-points="560,320;572.5,320;572.5,264;585,264" d="M 560 320 L 566.25 320 Q 572.5 320 572.5 313.75 L 572.5 270.25 Q 572.5 264 578.75 264 L 585 264" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="internal" data-edge-to="sched" data-edge-key="7" data-edge-id="internal-sched" data-composition-points="657.5,290;657.5,360;512.5,360;512.5,430" d="M 657.5 290 L 657.5 352 Q 657.5 360 649.5 360 L 520.5 360 Q 512.5 360 512.5 368 L 512.5 430" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="sched" data-edge-to="throttle" data-edge-key="8" data-edge-id="sched-throttle" data-composition-points="595,470;620,470" d="M 595 470 L 620 470" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="throttle" data-edge-to="cdp" data-edge-key="9" data-edge-id="throttle-cdp" data-composition-points="810,470;845,470" d="M 810 470 L 845 470" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="cdp" data-edge-to="inject" data-edge-label="CDP RPC 命令" data-edge-key="10" data-edge-id="cdp-inject" data-composition-points="1005,470;1110,470" d="M 1005 470 L 1110 470" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="inject" data-edge-to="deepseek" data-edge-label="页面自身 fetch" data-edge-key="11" data-edge-id="inject-deepseek" data-composition-points="1185,430;1185,360;1125,360;1125,290" d="M 1185 430 L 1185 368 Q 1185 360 1177 360 L 1133 360 Q 1125 360 1125 352 L 1125 290" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="deepseek" data-edge-to="stream" data-edge-label="经 CDP 回传" data-edge-key="12" data-edge-id="deepseek-stream" data-composition-points="1050,250;945,250" d="M 1050 250 L 945 250" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="stream" data-edge-to="clients" data-edge-label="SSE / 事件流按协议回传" data-edge-key="13" data-edge-id="stream-clients" data-composition-points="850,210;850,86;105,86;105,210" d="M 850 210 L 850 94 Q 850 86 842 86 L 113 86 Q 105 86 105 94 L 105 210" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="dash" data-edge-to="gateway" data-edge-label="admin API" data-edge-key="14" data-edge-id="dash-gateway" data-composition-points="175,470;192.5,470;192.5,250;210,250" d="M 175 470 L 184.5 470 Q 192.5 470 192.5 462 L 192.5 258 Q 192.5 250 200.5 250 L 210 250" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="auth" data-edge-to="gateway" data-edge-key="15" data-edge-id="auth-gateway" data-composition-points="287.5,590;287.5,566;311,566;311,314;295,314;295,290" d="M 287.5 590 L 287.5 574 Q 287.5 566 295.5 566 L 303 566 Q 311 566 311 558 L 311 322 Q 311 314 303 314 L 303 314 Q 295 314 295 306 L 295 290" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="sched" data-edge-to="tools" data-edge-label="工具协议注入 / 扫描" data-edge-key="16" data-edge-id="sched-tools" data-composition-points="512.5,510;512.5,550;475,550;475,590" d="M 512.5 510 L 512.5 542 Q 512.5 550 504.5 550 L 483 550 Q 475 550 475 558 L 475 590" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="sched" data-edge-to="sessions" data-edge-label="会话复用" data-edge-key="17" data-edge-id="sched-sessions" data-composition-points="512.5,510;512.5,550;670,550;670,590" d="M 512.5 510 L 512.5 542 Q 512.5 550 520.5 550 L 662 550 Q 670 550 670 558 L 670 590" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="cdp" data-edge-to="files" data-edge-label="uploadFileViaPage" data-edge-key="18" data-edge-id="cdp-files" data-composition-points="925,510;925,550;865,550;865,590" d="M 925 510 L 925 542 Q 925 550 917 550 L 873 550 Q 865 550 865 558 L 865 590" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="agents" data-edge-to="gateway" data-edge-label="/v1/*" data-edge-key="0" data-composition-points="173,276;210,276" d="M 173 276 L 210 276" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="gateway" data-edge-to="normalize" data-edge-key="1" data-composition-points="342,276;379,276" d="M 342 276 L 379 276" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="normalize" data-edge-to="dispatch" data-edge-key="2" data-composition-points="527,276;563,276" d="M 527 276 L 563 276" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="dispatch" data-edge-to="admission" data-edge-key="3" data-composition-points="699,276;736,276" d="M 699 276 L 736 276" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="admission" data-edge-to="cdp" data-edge-key="4" data-composition-points="880,276;913,276" d="M 880 276 L 913 276" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="cdp" data-edge-to="inject" data-edge-label="CDP RPC" data-edge-key="5" data-composition-points="1037,276;1071,276" d="M 1037 276 L 1071 276" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="inject" data-edge-to="web" data-edge-label="页面自身 fetch" data-edge-key="6" data-composition-points="1141,240;1141,160" d="M 1141 240 L 1141 160" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="cdp" data-edge-to="parser" data-edge-label="流式响应回传" data-edge-key="7" data-composition-points="975,312;975,352;639,352;639,396" d="M 975 312 L 975 344 Q 975 352 967 352 L 647 352 Q 639 352 639 360 L 639 396" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="parser" data-edge-to="agents" data-edge-label="tool_calls / SSE" data-edge-key="8" data-composition-points="639,468;639,520;16,520;16,276;37,276" d="M 639 468 L 639 512 Q 639 520 631 520 L 24 520 Q 16 520 16 512 L 16 284 Q 16 276 24 276 L 37 276" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="parser" data-edge-to="guard" data-edge-label="结果裁决" data-edge-key="9" data-composition-points="563,432;523,432" d="M 563 432 L 523 432" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="guard" data-edge-to="normalize" data-edge-label="空流重放" data-edge-key="10" data-composition-points="451,396;451,372;469,372;469,336;453,336;453,312" d="M 451 396 L 451 380 Q 451 372 459 372 L 461 372 Q 469 372 469 364 L 469 344 Q 469 336 461 336 L 461 336 Q 453 336 453 328 L 453 312" class="a-dashed" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="guard" data-edge-to="agents" data-edge-label="DQ_EMPTY_ANSWER" data-edge-key="11" data-composition-points="451,468;451,560;16,560;16,276;37,276" d="M 451 468 L 451 552 Q 451 560 443 560 L 24 560 Q 16 560 16 552 L 16 284 Q 16 276 24 276 L 37 276" class="a-dashed" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="normalize" data-edge-to="session" data-edge-label="前缀命中续聊" data-edge-key="12" data-composition-points="453,312;453,354;280,354;280,396" d="M 453 312 L 453 346 Q 453 354 445 354 L 288 354 Q 280 354 280 362 L 280 396" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="panel" data-edge-to="gateway" data-edge-label="admin API" data-edge-key="13" data-composition-points="103,396;103,354;276,354;276,312" d="M 103 396 L 103 362 Q 103 354 111 354 L 268 354 Q 276 354 276 346 L 276 312" class="a-dashed" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
 
         <!-- Components -->
-        <g id="node-clients" data-node-id="clients" data-node-label="本地客户端 / Agent" tabindex="0" role="button" aria-label="聚焦本地客户端 / Agent，pi agent · Claude Code, 架构组件" aria-pressed="false" data-node-kind="external" data-node-sublabel="pi agent · Claude Code" data-node-context="架构组件">
-          <title>本地客户端 / Agent · pi agent · Claude Code · 架构组件</title>
-          <rect x="30" y="210" width="150" height="80" rx="6" class="c-mask"/>
-          <rect x="30" y="210" width="150" height="80" rx="6" class="c-external" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="external" class="semantic-sigil s-external" transform="translate(36 216) scale(0.6875)">
+        <g id="node-agents" data-node-id="agents" data-node-label="Agent 客户端" tabindex="0" role="button" aria-label="聚焦Agent 客户端，pi · opencode · CCR, 架构组件" aria-pressed="false" data-node-kind="external" data-node-sublabel="pi · opencode · CCR" data-node-tag="多子代理并发" data-node-context="架构组件">
+          <title>Agent 客户端 · pi · opencode · CCR · 架构组件 · 多子代理并发</title>
+          <rect x="37" y="240" width="136" height="72" rx="6" class="c-mask"/>
+          <rect x="37" y="240" width="136" height="72" rx="6" class="c-external" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="external" class="semantic-sigil s-external" transform="translate(43 246) scale(0.6875)">
             <rect x="2.5" y="5" width="8.5" height="8" rx="1.5"/>
             <path d="M8 2.5h5.5V8M13.5 2.5 7.5 8.5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="105" y="248" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">本地客户端 / Agent</text>
-        <text data-detail="context" x="105" y="264" class="t-muted" font-size="9" text-anchor="middle">pi agent · Claude Code</text>
+          <text data-node-label="" data-detail-anchor="" x="105" y="274" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Agent 客户端</text>
+        <text data-detail="context" x="105" y="290" class="t-muted" font-size="9" text-anchor="middle">pi · opencode · CCR</text>
+        <text data-detail="fine" x="105" y="304" class="t-external" font-size="7" text-anchor="middle">多子代理并发</text>
         </g>
 
-        <g id="node-gateway" data-node-id="gateway" data-node-label="HTTP 服务 39751" tabindex="0" role="button" aria-label="聚焦HTTP 服务 39751，/v1/* · /admin/* · Bearer, 本机回环 127.0.0.1（可信区）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="/v1/* · /admin/* · Bearer" data-node-tag="Bearer 鉴权" data-node-context="本机回环 127.0.0.1（可信区）">
-          <title>HTTP 服务 39751 · /v1/* · /admin/* · Bearer · 本机回环 127.0.0.1（可信区） · Bearer 鉴权</title>
-          <rect x="210" y="210" width="170" height="80" rx="6" class="c-mask"/>
-          <rect x="210" y="210" width="170" height="80" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(216 216) scale(0.6875)">
+        <g id="node-gateway" data-node-id="gateway" data-node-label="API 网关" tabindex="0" role="button" aria-label="聚焦API 网关，:39751 · Key 鉴权, Browser Bridge（本机 · 127.0.0.1）" aria-pressed="false" data-node-kind="security" data-node-sublabel=":39751 · Key 鉴权" data-node-context="Browser Bridge（本机 · 127.0.0.1）">
+          <title>API 网关 · :39751 · Key 鉴权 · Browser Bridge（本机 · 127.0.0.1）</title>
+          <rect x="210" y="240" width="132" height="72" rx="6" class="c-mask"/>
+          <rect x="210" y="240" width="132" height="72" rx="6" class="c-security" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(216 246) scale(0.6875)">
+            <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
+            <path d="m5.8 8 1.5 1.5 3-3"/>
+          </g>
+          <text data-node-label="" data-detail-anchor="" x="276" y="274" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">API 网关</text>
+        <text data-detail="context" x="276" y="290" class="t-muted" font-size="9" text-anchor="middle">:39751 · Key 鉴权</text>
+        </g>
+
+        <g id="node-normalize" data-node-id="normalize" data-node-label="协议归一层" tabindex="0" role="button" aria-label="聚焦协议归一层，OpenAI · Claude · Responses, Browser Bridge（本机 · 127.0.0.1）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="OpenAI · Claude · Responses" data-node-context="Browser Bridge（本机 · 127.0.0.1）">
+          <title>协议归一层 · OpenAI · Claude · Responses · Browser Bridge（本机 · 127.0.0.1）</title>
+          <rect x="379" y="240" width="148" height="72" rx="6" class="c-mask"/>
+          <rect x="379" y="240" width="148" height="72" rx="6" class="c-backend" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(385 246) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="295" y="248" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">HTTP 服务 39751</text>
-        <text data-detail="context" x="295" y="264" class="t-muted" font-size="9" text-anchor="middle">/v1/* · /admin/* · Bearer</text>
-        <text data-detail="fine" x="295" y="282" class="t-backend" font-size="7" text-anchor="middle">Bearer 鉴权</text>
+          <text data-node-label="" data-detail-anchor="" x="453" y="274" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">协议归一层</text>
+        <text data-detail="context" x="453" y="290" class="t-muted" font-size="8.6" text-anchor="middle">OpenAI · Claude · Responses</text>
         </g>
 
-        <g id="node-ep_openai" data-node-id="ep_openai" data-node-label="/v1/chat/completions" tabindex="0" role="button" aria-label="聚焦/v1/chat/completions，OpenAI 原生 · 流式, 本机回环 127.0.0.1（可信区）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="OpenAI 原生 · 流式" data-node-context="本机回环 127.0.0.1（可信区）">
-          <title>/v1/chat/completions · OpenAI 原生 · 流式 · 本机回环 127.0.0.1（可信区）</title>
-          <rect x="405" y="146" width="155" height="60" rx="6" class="c-mask"/>
-          <rect x="405" y="146" width="155" height="60" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(411 152) scale(0.6875)">
+        <g id="node-dispatch" data-node-id="dispatch" data-node-label="调度队列" tabindex="0" role="button" aria-label="聚焦调度队列，pump() · 会话分流, Browser Bridge（本机 · 127.0.0.1）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="pump() · 会话分流" data-node-context="Browser Bridge（本机 · 127.0.0.1）">
+          <title>调度队列 · pump() · 会话分流 · Browser Bridge（本机 · 127.0.0.1）</title>
+          <rect x="563" y="240" width="136" height="72" rx="6" class="c-mask"/>
+          <rect x="563" y="240" width="136" height="72" rx="6" class="c-backend" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(569 246) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="482.5" y="174" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">/v1/chat/completions</text>
-        <text data-detail="context" x="482.5" y="190" class="t-muted" font-size="9" text-anchor="middle">OpenAI 原生 · 流式</text>
+          <text data-node-label="" data-detail-anchor="" x="631" y="274" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">调度队列</text>
+        <text data-detail="context" x="631" y="290" class="t-muted" font-size="9" text-anchor="middle">pump() · 会话分流</text>
         </g>
 
-        <g id="node-ep_anthropic" data-node-id="ep_anthropic" data-node-label="/v1/messages" tabindex="0" role="button" aria-label="聚焦/v1/messages，anthropicToInternal(), 本机回环 127.0.0.1（可信区）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="anthropicToInternal()" data-node-context="本机回环 127.0.0.1（可信区）">
-          <title>/v1/messages · anthropicToInternal() · 本机回环 127.0.0.1（可信区）</title>
-          <rect x="405" y="218" width="155" height="60" rx="6" class="c-mask"/>
-          <rect x="405" y="218" width="155" height="60" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(411 224) scale(0.6875)">
+        <g id="node-admission" data-node-id="admission" data-node-label="准入闸门" tabindex="0" role="button" aria-label="聚焦准入闸门，6 槽 · 90/h · 500/d, Browser Bridge（本机 · 127.0.0.1）" aria-pressed="false" data-node-kind="security" data-node-sublabel="6 槽 · 90/h · 500/d" data-node-tag="冷却感知" data-node-context="Browser Bridge（本机 · 127.0.0.1）">
+          <title>准入闸门 · 6 槽 · 90/h · 500/d · Browser Bridge（本机 · 127.0.0.1） · 冷却感知</title>
+          <rect x="736" y="240" width="144" height="72" rx="6" class="c-mask"/>
+          <rect x="736" y="240" width="144" height="72" rx="6" class="c-security" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(742 246) scale(0.6875)">
+            <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
+            <path d="m5.8 8 1.5 1.5 3-3"/>
+          </g>
+          <text data-node-label="" data-detail-anchor="" x="808" y="274" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">准入闸门</text>
+        <text data-detail="context" x="808" y="290" class="t-muted" font-size="9" text-anchor="middle">6 槽 · 90/h · 500/d</text>
+        <text data-detail="fine" x="808" y="304" class="t-security" font-size="7" text-anchor="middle">冷却感知</text>
+        </g>
+
+        <g id="node-cdp" data-node-id="cdp" data-node-label="CDP 总线" tabindex="0" role="button" aria-label="聚焦CDP 总线，每账号一链路, Browser Bridge（本机 · 127.0.0.1）" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="每账号一链路" data-node-context="Browser Bridge（本机 · 127.0.0.1）">
+          <title>CDP 总线 · 每账号一链路 · Browser Bridge（本机 · 127.0.0.1）</title>
+          <rect x="913" y="240" width="124" height="72" rx="6" class="c-mask"/>
+          <rect x="913" y="240" width="124" height="72" rx="6" class="c-cloud" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="cloud" class="semantic-sigil s-cloud" transform="translate(919 246) scale(0.6875)">
+            <path d="M4.3 12.5h7.3a2.4 2.4 0 0 0 .2-4.8 4 4 0 0 0-7.5-1.3A3.1 3.1 0 0 0 4.3 12.5Z"/>
+          </g>
+          <text data-node-label="" data-detail-anchor="" x="975" y="274" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">CDP 总线</text>
+        <text data-detail="context" x="975" y="290" class="t-muted" font-size="9" text-anchor="middle">每账号一链路</text>
+        </g>
+
+        <g id="node-inject" data-node-id="inject" data-node-label="页面注入层" tabindex="0" role="button" aria-label="聚焦页面注入层，PoW · SSE · 静音识别, Chrome 页面上下文 · 真实指纹出网" aria-pressed="false" data-node-kind="backend" data-node-sublabel="PoW · SSE · 静音识别" data-node-context="Chrome 页面上下文 · 真实指纹出网">
+          <title>页面注入层 · PoW · SSE · 静音识别 · Chrome 页面上下文 · 真实指纹出网</title>
+          <rect x="1071" y="240" width="140" height="72" rx="6" class="c-mask"/>
+          <rect x="1071" y="240" width="140" height="72" rx="6" class="c-backend" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(1077 246) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="482.5" y="246" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">/v1/messages</text>
-        <text data-detail="context" x="482.5" y="262" class="t-muted" font-size="9" text-anchor="middle">anthropicToInternal()</text>
+          <text data-node-label="" data-detail-anchor="" x="1141" y="274" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">页面注入层</text>
+        <text data-detail="context" x="1141" y="290" class="t-muted" font-size="9" text-anchor="middle">PoW · SSE · 静音识别</text>
         </g>
 
-        <g id="node-ep_responses" data-node-id="ep_responses" data-node-label="/v1/responses" tabindex="0" role="button" aria-label="聚焦/v1/responses，responsesToInternal(), 本机回环 127.0.0.1（可信区）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="responsesToInternal()" data-node-context="本机回环 127.0.0.1（可信区）">
-          <title>/v1/responses · responsesToInternal() · 本机回环 127.0.0.1（可信区）</title>
-          <rect x="405" y="290" width="155" height="60" rx="6" class="c-mask"/>
-          <rect x="405" y="290" width="155" height="60" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(411 296) scale(0.6875)">
-            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
-          </g>
-          <text data-node-label="" data-detail-anchor="" x="482.5" y="318" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">/v1/responses</text>
-        <text data-detail="context" x="482.5" y="334" class="t-muted" font-size="9" text-anchor="middle">responsesToInternal()</text>
-        </g>
-
-        <g id="node-internal" data-node-id="internal" data-node-label="统一内部消息模型" tabindex="0" role="button" aria-label="聚焦统一内部消息模型，messages + tools + 增量, 本机回环 127.0.0.1（可信区）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="messages + tools + 增量" data-node-context="本机回环 127.0.0.1（可信区）">
-          <title>统一内部消息模型 · messages + tools + 增量 · 本机回环 127.0.0.1（可信区）</title>
-          <rect x="585" y="210" width="145" height="80" rx="6" class="c-mask"/>
-          <rect x="585" y="210" width="145" height="80" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(591 216) scale(0.6875)">
-            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
-          </g>
-          <text data-node-label="" data-detail-anchor="" x="657.5" y="248" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">统一内部消息模型</text>
-        <text data-detail="context" x="657.5" y="264" class="t-muted" font-size="9" text-anchor="middle">messages + tools + 增量</text>
-        </g>
-
-        <g id="node-stream" data-node-id="stream" data-node-label="响应按协议分流" tabindex="0" role="button" aria-label="聚焦响应按协议分流，sseWrite / anthropic / respStream, 本机回环 127.0.0.1（可信区）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="sseWrite / anthropic / respStream" data-node-tag="与请求同一条流水线" data-node-context="本机回环 127.0.0.1（可信区）">
-          <title>响应按协议分流 · sseWrite / anthropic / respStream · 本机回环 127.0.0.1（可信区） · 与请求同一条流水线</title>
-          <rect x="755" y="210" width="190" height="80" rx="6" class="c-mask"/>
-          <rect x="755" y="210" width="190" height="80" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(761 216) scale(0.6875)">
-            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
-          </g>
-          <text data-node-label="" data-detail-anchor="" x="850" y="248" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">响应按协议分流</text>
-        <text data-detail="context" x="850" y="264" class="t-muted" font-size="9" text-anchor="middle">sseWrite / anthropic / respStream</text>
-        <text data-detail="fine" x="850" y="282" class="t-backend" font-size="7" text-anchor="middle">与请求同一条流水线</text>
-        </g>
-
-        <g id="node-deepseek" data-node-id="deepseek" data-node-label="DeepSeek 网页版" tabindex="0" role="button" aria-label="聚焦DeepSeek 网页版，真实 TLS · Cookie · 数美, 公网 DeepSeek 服务端" aria-pressed="false" data-node-kind="external" data-node-sublabel="真实 TLS · Cookie · 数美" data-node-tag="chat.deepseek.com" data-node-context="公网 DeepSeek 服务端">
-          <title>DeepSeek 网页版 · 真实 TLS · Cookie · 数美 · 公网 DeepSeek 服务端 · chat.deepseek.com</title>
-          <rect x="1050" y="210" width="150" height="80" rx="6" class="c-mask"/>
-          <rect x="1050" y="210" width="150" height="80" rx="6" class="c-external" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="external" class="semantic-sigil s-external" transform="translate(1056 216) scale(0.6875)">
+        <g id="node-web" data-node-id="web" data-node-label="DeepSeek Web" tabindex="0" role="button" aria-label="聚焦DeepSeek Web，chat.deepseek.com, Chrome 页面上下文 · 真实指纹出网" aria-pressed="false" data-node-kind="external" data-node-sublabel="chat.deepseek.com" data-node-context="Chrome 页面上下文 · 真实指纹出网">
+          <title>DeepSeek Web · chat.deepseek.com · Chrome 页面上下文 · 真实指纹出网</title>
+          <rect x="1071" y="96" width="140" height="64" rx="6" class="c-mask"/>
+          <rect x="1071" y="96" width="140" height="64" rx="6" class="c-external" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="external" class="semantic-sigil s-external" transform="translate(1077 102) scale(0.6875)">
             <rect x="2.5" y="5" width="8.5" height="8" rx="1.5"/>
             <path d="M8 2.5h5.5V8M13.5 2.5 7.5 8.5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="1125" y="248" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">DeepSeek 网页版</text>
-        <text data-detail="context" x="1125" y="264" class="t-muted" font-size="9" text-anchor="middle">真实 TLS · Cookie · 数美</text>
-        <text data-detail="fine" x="1125" y="282" class="t-external" font-size="7" text-anchor="middle">chat.deepseek.com</text>
+          <text data-node-label="" data-detail-anchor="" x="1141" y="126" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">DeepSeek Web</text>
+        <text data-detail="context" x="1141" y="142" class="t-muted" font-size="9" text-anchor="middle">chat.deepseek.com</text>
         </g>
 
-        <g id="node-dash" data-node-id="dash" data-node-label="Dashboard 面板" tabindex="0" role="button" aria-label="聚焦Dashboard 面板，/dashboard · 多 Key 管理, 架构组件" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="/dashboard · 多 Key 管理" data-node-context="架构组件">
-          <title>Dashboard 面板 · /dashboard · 多 Key 管理 · 架构组件</title>
-          <rect x="30" y="430" width="145" height="80" rx="6" class="c-mask"/>
-          <rect x="30" y="430" width="145" height="80" rx="6" class="c-frontend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(36 436) scale(0.6875)">
+        <g id="node-parser" data-node-id="parser" data-node-label="工具解析器" tabindex="0" role="button" aria-label="聚焦工具解析器，XML · DSML · JSON 修复, Browser Bridge（本机 · 127.0.0.1）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="XML · DSML · JSON 修复" data-node-tag="流式容错" data-node-context="Browser Bridge（本机 · 127.0.0.1）">
+          <title>工具解析器 · XML · DSML · JSON 修复 · Browser Bridge（本机 · 127.0.0.1） · 流式容错</title>
+          <rect x="563" y="396" width="152" height="72" rx="6" class="c-mask"/>
+          <rect x="563" y="396" width="152" height="72" rx="6" class="c-backend" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(569 402) scale(0.6875)">
+            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
+          </g>
+          <text data-node-label="" data-detail-anchor="" x="639" y="430" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">工具解析器</text>
+        <text data-detail="context" x="639" y="446" class="t-muted" font-size="9" text-anchor="middle">XML · DSML · JSON 修复</text>
+        <text data-detail="fine" x="639" y="460" class="t-backend" font-size="7" text-anchor="middle">流式容错</text>
+        </g>
+
+        <g id="node-guard" data-node-id="guard" data-node-label="韧性防线" tabindex="0" role="button" aria-label="聚焦韧性防线，空流重试链 · 错误上抛, Browser Bridge（本机 · 127.0.0.1）" aria-pressed="false" data-node-kind="security" data-node-sublabel="空流重试链 · 错误上抛" data-node-context="Browser Bridge（本机 · 127.0.0.1）">
+          <title>韧性防线 · 空流重试链 · 错误上抛 · Browser Bridge（本机 · 127.0.0.1）</title>
+          <rect x="379" y="396" width="144" height="72" rx="6" class="c-mask"/>
+          <rect x="379" y="396" width="144" height="72" rx="6" class="c-security" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(385 402) scale(0.6875)">
+            <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
+            <path d="m5.8 8 1.5 1.5 3-3"/>
+          </g>
+          <text data-node-label="" data-detail-anchor="" x="451" y="430" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">韧性防线</text>
+        <text data-detail="context" x="451" y="446" class="t-muted" font-size="9" text-anchor="middle">空流重试链 · 错误上抛</text>
+        </g>
+
+        <g id="node-session" data-node-id="session" data-node-label="会话存储" tabindex="0" role="button" aria-label="聚焦会话存储，前缀哈希 · 6h 回收, Browser Bridge（本机 · 127.0.0.1）" aria-pressed="false" data-node-kind="database" data-node-sublabel="前缀哈希 · 6h 回收" data-node-context="Browser Bridge（本机 · 127.0.0.1）">
+          <title>会话存储 · 前缀哈希 · 6h 回收 · Browser Bridge（本机 · 127.0.0.1）</title>
+          <rect x="210" y="396" width="140" height="72" rx="6" class="c-mask"/>
+          <rect x="210" y="396" width="140" height="72" rx="6" class="c-database" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(216 402) scale(0.6875)">
+            <ellipse cx="8" cy="4" rx="5" ry="2"/>
+            <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
+          </g>
+          <text data-node-label="" data-detail-anchor="" x="280" y="430" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">会话存储</text>
+        <text data-detail="context" x="280" y="446" class="t-muted" font-size="9" text-anchor="middle">前缀哈希 · 6h 回收</text>
+        </g>
+
+        <g id="node-panel" data-node-id="panel" data-node-label="管理面板" tabindex="0" role="button" aria-label="聚焦管理面板，号池 · 日志 · 清扫, Browser Bridge（本机 · 127.0.0.1）" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="号池 · 日志 · 清扫" data-node-context="Browser Bridge（本机 · 127.0.0.1）">
+          <title>管理面板 · 号池 · 日志 · 清扫 · Browser Bridge（本机 · 127.0.0.1）</title>
+          <rect x="37" y="396" width="132" height="72" rx="6" class="c-mask"/>
+          <rect x="37" y="396" width="132" height="72" rx="6" class="c-frontend" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(43 402) scale(0.6875)">
             <rect x="2" y="3" width="12" height="10" rx="2"/>
             <path d="M2 6.5h12"/>
             <circle cx="4.1" cy="4.8" r=".7" class="sigil-fill"/>
             <circle cx="6.3" cy="4.8" r=".7" class="sigil-fill"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="102.5" y="468" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Dashboard 面板</text>
-        <text data-detail="context" x="102.5" y="484" class="t-muted" font-size="9" text-anchor="middle">/dashboard · 多 Key 管理</text>
-        </g>
-
-        <g id="node-sched" data-node-id="sched" data-node-label="任务队列 pump()" tabindex="0" role="button" aria-label="聚焦任务队列 pump()，并发槽 6 · 队列上限 32, 本机回环 127.0.0.1（可信区）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="并发槽 6 · 队列上限 32" data-node-tag="finishJob / failJob" data-node-context="本机回环 127.0.0.1（可信区）">
-          <title>任务队列 pump() · 并发槽 6 · 队列上限 32 · 本机回环 127.0.0.1（可信区） · finishJob / failJob</title>
-          <rect x="430" y="430" width="165" height="80" rx="6" class="c-mask"/>
-          <rect x="430" y="430" width="165" height="80" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(436 436) scale(0.6875)">
-            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
-          </g>
-          <text data-node-label="" data-detail-anchor="" x="512.5" y="468" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">任务队列 pump()</text>
-        <text data-detail="context" x="512.5" y="484" class="t-muted" font-size="9" text-anchor="middle">并发槽 6 · 队列上限 32</text>
-        <text data-detail="fine" x="512.5" y="502" class="t-backend" font-size="7" text-anchor="middle">finishJob / failJob</text>
-        </g>
-
-        <g id="node-throttle" data-node-id="throttle" data-node-label="账号级串行闸门" tabindex="0" role="button" aria-label="聚焦账号级串行闸门，同号串行 · 90/时 · 500/天, 本机回环 127.0.0.1（可信区）" aria-pressed="false" data-node-kind="security" data-node-sublabel="同号串行 · 90/时 · 500/天" data-node-tag="coolUntil · dead · 软限流" data-node-context="本机回环 127.0.0.1（可信区）">
-          <title>账号级串行闸门 · 同号串行 · 90/时 · 500/天 · 本机回环 127.0.0.1（可信区） · coolUntil · dead · 软限流</title>
-          <rect x="620" y="430" width="190" height="80" rx="6" class="c-mask"/>
-          <rect x="620" y="430" width="190" height="80" rx="6" class="c-security" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(626 436) scale(0.6875)">
-            <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
-            <path d="m5.8 8 1.5 1.5 3-3"/>
-          </g>
-          <text data-node-label="" data-detail-anchor="" x="715" y="468" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">账号级串行闸门</text>
-        <text data-detail="context" x="715" y="484" class="t-muted" font-size="9" text-anchor="middle">同号串行 · 90/时 · 500/天</text>
-        <text data-detail="fine" x="715" y="502" class="t-security" font-size="7" text-anchor="middle">coolUntil · dead · 软限流</text>
-        </g>
-
-        <g id="node-cdp" data-node-id="cdp" data-node-label="CDP 连接管理" tabindex="0" role="button" aria-label="聚焦CDP 连接管理，class Cdp · :9222+ 每号一个, 本机回环 127.0.0.1（可信区）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="class Cdp · :9222+ 每号一个" data-node-tag="屏幕外 headed" data-node-context="本机回环 127.0.0.1（可信区）">
-          <title>CDP 连接管理 · class Cdp · :9222+ 每号一个 · 本机回环 127.0.0.1（可信区） · 屏幕外 headed</title>
-          <rect x="845" y="430" width="160" height="80" rx="6" class="c-mask"/>
-          <rect x="845" y="430" width="160" height="80" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(851 436) scale(0.6875)">
-            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
-          </g>
-          <text data-node-label="" data-detail-anchor="" x="925" y="468" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">CDP 连接管理</text>
-        <text data-detail="context" x="925" y="484" class="t-muted" font-size="9" text-anchor="middle">class Cdp · :9222+ 每号一个</text>
-        <text data-detail="fine" x="925" y="502" class="t-backend" font-size="7" text-anchor="middle">屏幕外 headed</text>
-        </g>
-
-        <g id="node-inject" data-node-id="inject" data-node-label="inject.js 页面注入" tabindex="0" role="button" aria-label="聚焦inject.js 页面注入，PoW · 页面 fetch · SSE, Chrome 页面上下文" aria-pressed="false" data-node-kind="backend" data-node-sublabel="PoW · 页面 fetch · SSE" data-node-tag="Runtime.evaluate" data-node-context="Chrome 页面上下文">
-          <title>inject.js 页面注入 · PoW · 页面 fetch · SSE · Chrome 页面上下文 · Runtime.evaluate</title>
-          <rect x="1110" y="430" width="150" height="80" rx="6" class="c-mask"/>
-          <rect x="1110" y="430" width="150" height="80" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(1116 436) scale(0.6875)">
-            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
-          </g>
-          <text data-node-label="" data-detail-anchor="" x="1185" y="468" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">inject.js 页面注入</text>
-        <text data-detail="context" x="1185" y="484" class="t-muted" font-size="9" text-anchor="middle">PoW · 页面 fetch · SSE</text>
-        <text data-detail="fine" x="1185" y="502" class="t-backend" font-size="7" text-anchor="middle">Runtime.evaluate</text>
-        </g>
-
-        <g id="node-auth" data-node-id="auth" data-node-label="auth.json 鉴权" tabindex="0" role="button" aria-label="聚焦auth.json 鉴权，多 Key + 面板密码, 本机回环 127.0.0.1（可信区）" aria-pressed="false" data-node-kind="security" data-node-sublabel="多 Key + 面板密码" data-node-tag="stats.json 15 天" data-node-context="本机回环 127.0.0.1（可信区）">
-          <title>auth.json 鉴权 · 多 Key + 面板密码 · 本机回环 127.0.0.1（可信区） · stats.json 15 天</title>
-          <rect x="210" y="590" width="155" height="80" rx="6" class="c-mask"/>
-          <rect x="210" y="590" width="155" height="80" rx="6" class="c-security" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(216 596) scale(0.6875)">
-            <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
-            <path d="m5.8 8 1.5 1.5 3-3"/>
-          </g>
-          <text data-node-label="" data-detail-anchor="" x="287.5" y="628" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">auth.json 鉴权</text>
-        <text data-detail="context" x="287.5" y="644" class="t-muted" font-size="9" text-anchor="middle">多 Key + 面板密码</text>
-        <text data-detail="fine" x="287.5" y="662" class="t-security" font-size="7" text-anchor="middle">stats.json 15 天</text>
-        </g>
-
-        <g id="node-tools" data-node-id="tools" data-node-label="工具调用解析" tabindex="0" role="button" aria-label="聚焦工具调用解析，TOOL_RULES → prompt 注入, 本机回环 127.0.0.1（可信区）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="TOOL_RULES → prompt 注入" data-node-tag="流式扫描 → tool_calls" data-node-context="本机回环 127.0.0.1（可信区）">
-          <title>工具调用解析 · TOOL_RULES → prompt 注入 · 本机回环 127.0.0.1（可信区） · 流式扫描 → tool_calls</title>
-          <rect x="390" y="590" width="170" height="80" rx="6" class="c-mask"/>
-          <rect x="390" y="590" width="170" height="80" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(396 596) scale(0.6875)">
-            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
-          </g>
-          <text data-node-label="" data-detail-anchor="" x="475" y="628" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">工具调用解析</text>
-        <text data-detail="context" x="475" y="644" class="t-muted" font-size="9" text-anchor="middle">TOOL_RULES → prompt 注入</text>
-        <text data-detail="fine" x="475" y="662" class="t-backend" font-size="7" text-anchor="middle">流式扫描 → tool_calls</text>
-        </g>
-
-        <g id="node-sessions" data-node-id="sessions" data-node-label="会话映射 sessions.json" tabindex="0" role="button" aria-label="聚焦会话映射 sessions.json，lookupSession 前缀哈希 · 会话锁, 本机回环 127.0.0.1（可信区）" aria-pressed="false" data-node-kind="database" data-node-sublabel="lookupSession 前缀哈希 · 会话锁" data-node-tag="会话锁 · 10 天回收" data-node-context="本机回环 127.0.0.1（可信区）">
-          <title>会话映射 sessions.json · lookupSession 前缀哈希 · 会话锁 · 本机回环 127.0.0.1（可信区） · 会话锁 · 10 天回收</title>
-          <rect x="585" y="590" width="170" height="80" rx="6" class="c-mask"/>
-          <rect x="585" y="590" width="170" height="80" rx="6" class="c-database" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(591 596) scale(0.6875)">
-            <ellipse cx="8" cy="4" rx="5" ry="2"/>
-            <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
-          </g>
-          <text data-node-label="" data-detail-anchor="" x="670" y="628" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">会话映射 sessions.json</text>
-        <text data-detail="context" x="670" y="644" class="t-muted" font-size="8.7" text-anchor="middle">lookupSession 前缀哈希 · 会话锁</text>
-        <text data-detail="fine" x="670" y="662" class="t-database" font-size="7" text-anchor="middle">会话锁 · 10 天回收</text>
-        </g>
-
-        <g id="node-files" data-node-id="files" data-node-label="文件缓存 files.json" tabindex="0" role="button" aria-label="聚焦文件缓存 files.json，内容哈希 · TTL 7 天, 本机回环 127.0.0.1（可信区）" aria-pressed="false" data-node-kind="database" data-node-sublabel="内容哈希 · TTL 7 天" data-node-tag="uploadFileViaPage" data-node-context="本机回环 127.0.0.1（可信区）">
-          <title>文件缓存 files.json · 内容哈希 · TTL 7 天 · 本机回环 127.0.0.1（可信区） · uploadFileViaPage</title>
-          <rect x="780" y="590" width="170" height="80" rx="6" class="c-mask"/>
-          <rect x="780" y="590" width="170" height="80" rx="6" class="c-database" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(786 596) scale(0.6875)">
-            <ellipse cx="8" cy="4" rx="5" ry="2"/>
-            <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
-          </g>
-          <text data-node-label="" data-detail-anchor="" x="865" y="628" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">文件缓存 files.json</text>
-        <text data-detail="context" x="865" y="644" class="t-muted" font-size="9" text-anchor="middle">内容哈希 · TTL 7 天</text>
-        <text data-detail="fine" x="865" y="662" class="t-database" font-size="7" text-anchor="middle">uploadFileViaPage</text>
+          <text data-node-label="" data-detail-anchor="" x="103" y="430" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">管理面板</text>
+        <text data-detail="context" x="103" y="446" class="t-muted" font-size="9" text-anchor="middle">号池 · 日志 · 清扫</text>
         </g>
 
         <!-- Connection labels -->
-        <g data-detail="context" data-edge-from="clients" data-edge-to="gateway" data-edge-label="POST /v1/*" data-edge-key="0" data-edge-id="clients-gateway">
-          <rect x="166" y="182" width="58" height="14" rx="3" class="c-mask"/>
-          <text x="195" y="192" class="t-backend" font-size="8" text-anchor="middle">POST /v1/*</text>
+        <g data-detail="context" data-edge-from="agents" data-edge-to="gateway" data-edge-label="/v1/*" data-edge-key="0">
+          <rect x="174" y="270" width="34" height="14" rx="3" class="c-mask"/>
+          <text x="191" y="280" class="t-backend" font-size="8" text-anchor="middle">/v1/*</text>
         </g>
 
 
 
 
-
-
-
-
-
-        <g data-detail="context" data-edge-from="cdp" data-edge-to="inject" data-edge-label="CDP RPC 命令" data-edge-key="10" data-edge-id="cdp-inject">
-          <rect x="1023.7" y="450" width="67.6" height="14" rx="3" class="c-mask"/>
-          <text x="1057.5" y="460" class="t-backend" font-size="8" text-anchor="middle">CDP RPC 命令</text>
+        <g data-detail="context" data-edge-from="cdp" data-edge-to="inject" data-edge-label="CDP RPC" data-edge-key="5">
+          <rect x="1032.2" y="222" width="43.6" height="14" rx="3" class="c-mask"/>
+          <text x="1054" y="232" class="t-backend" font-size="8" text-anchor="middle">CDP RPC</text>
         </g>
-        <g data-detail="context" data-edge-from="inject" data-edge-to="deepseek" data-edge-label="页面自身 fetch" data-edge-key="11" data-edge-id="inject-deepseek">
-          <rect x="1116.4" y="340" width="77.2" height="14" rx="3" class="c-mask"/>
-          <text x="1155" y="350" class="t-backend" font-size="8" text-anchor="middle">页面自身 fetch</text>
+        <g data-detail="context" data-edge-from="inject" data-edge-to="web" data-edge-label="页面自身 fetch" data-edge-key="6">
+          <rect x="1102.4" y="220" width="77.2" height="14" rx="3" class="c-mask"/>
+          <text x="1141" y="230" class="t-backend" font-size="8" text-anchor="middle">页面自身 fetch</text>
         </g>
-        <g data-detail="context" data-edge-from="deepseek" data-edge-to="stream" data-edge-label="经 CDP 回传" data-edge-key="12" data-edge-id="deepseek-stream">
-          <rect x="966.1" y="230" width="62.8" height="14" rx="3" class="c-mask"/>
-          <text x="997.5" y="240" class="t-backend" font-size="8" text-anchor="middle">经 CDP 回传</text>
+        <g data-detail="context" data-edge-from="cdp" data-edge-to="parser" data-edge-label="流式响应回传" data-edge-key="7">
+          <rect x="766.2" y="320" width="67.6" height="14" rx="3" class="c-mask"/>
+          <text x="800" y="330" class="t-backend" font-size="8" text-anchor="middle">流式响应回传</text>
         </g>
-        <g data-detail="context" data-edge-from="stream" data-edge-to="clients" data-edge-label="SSE / 事件流按协议回传" data-edge-key="13" data-edge-id="stream-clients">
-          <rect x="419.7" y="66" width="115.6" height="14" rx="3" class="c-mask"/>
-          <text x="477.5" y="76" class="t-backend" font-size="8" text-anchor="middle">SSE / 事件流按协议回传</text>
+        <g data-detail="context" data-edge-from="parser" data-edge-to="agents" data-edge-label="tool_calls / SSE" data-edge-key="8">
+          <rect x="316.6" y="518" width="86.8" height="14" rx="3" class="c-mask"/>
+          <text x="360" y="528" class="t-backend" font-size="8" text-anchor="middle">tool_calls / SSE</text>
         </g>
-        <g data-detail="context" data-edge-from="dash" data-edge-to="gateway" data-edge-label="admin API" data-edge-key="14" data-edge-id="dash-gateway">
-          <rect x="165.9" y="340" width="53.199999999999996" height="14" rx="3" class="c-mask"/>
-          <text x="192.5" y="350" class="t-muted" font-size="8" text-anchor="middle">admin API</text>
+        <g data-detail="context" data-edge-from="parser" data-edge-to="guard" data-edge-label="结果裁决" data-edge-key="9">
+          <rect x="483.8" y="342" width="48.4" height="14" rx="3" class="c-mask"/>
+          <text x="508" y="352" class="t-muted" font-size="8" text-anchor="middle">结果裁决</text>
         </g>
-
-        <g data-detail="context" data-edge-from="sched" data-edge-to="tools" data-edge-label="工具协议注入 / 扫描" data-edge-key="16" data-edge-id="sched-tools">
-          <rect x="349.4" y="542" width="101.2" height="14" rx="3" class="c-mask"/>
-          <text x="400" y="552" class="t-muted" font-size="8" text-anchor="middle">工具协议注入 / 扫描</text>
+        <g data-detail="context" data-edge-from="guard" data-edge-to="normalize" data-edge-label="空流重放" data-edge-key="10">
+          <rect x="383.8" y="330" width="48.4" height="14" rx="3" class="c-mask"/>
+          <text x="408" y="340" class="t-messagebus" font-size="8" text-anchor="middle">空流重放</text>
         </g>
-        <g data-detail="context" data-edge-from="sched" data-edge-to="sessions" data-edge-label="会话复用" data-edge-key="17" data-edge-id="sched-sessions">
-          <rect x="567.05" y="530" width="48.4" height="14" rx="3" class="c-mask"/>
-          <text x="591.25" y="540" class="t-muted" font-size="8" text-anchor="middle">会话复用</text>
+        <g data-detail="context" data-edge-from="guard" data-edge-to="agents" data-edge-label="DQ_EMPTY_ANSWER" data-edge-key="11">
+          <rect x="129" y="558" width="82" height="14" rx="3" class="c-mask"/>
+          <text x="170" y="568" class="t-messagebus" font-size="8" text-anchor="middle">DQ_EMPTY_ANSWER</text>
         </g>
-        <g data-detail="context" data-edge-from="cdp" data-edge-to="files" data-edge-label="uploadFileViaPage" data-edge-key="18" data-edge-id="cdp-files">
-          <rect x="849.2" y="530" width="91.6" height="14" rx="3" class="c-mask"/>
-          <text x="895" y="540" class="t-muted" font-size="8" text-anchor="middle">uploadFileViaPage</text>
+        <g data-detail="context" data-edge-from="normalize" data-edge-to="session" data-edge-label="前缀命中续聊" data-edge-key="12">
+          <rect x="556.2" y="356" width="67.6" height="14" rx="3" class="c-mask"/>
+          <text x="590" y="366" class="t-muted" font-size="8" text-anchor="middle">前缀命中续聊</text>
+        </g>
+        <g data-detail="context" data-edge-from="panel" data-edge-to="gateway" data-edge-label="admin API" data-edge-key="13">
+          <rect x="69.4" y="330" width="53.199999999999996" height="14" rx="3" class="c-mask"/>
+          <text x="96" y="340" class="t-messagebus" font-size="8" text-anchor="middle">admin API</text>
         </g>
 
         <!-- Boundary labels (foreground masks keep routes out of titles) -->
-        <g data-graph-role="structural-frame-label" data-composition-frame-id="0" data-composition-frame-kind="region" data-composition-frame-label="本机回环 127.0.0.1（可信区）">
-          <rect data-graph-role="structural-frame-label-mask" x="198" y="126" width="161.2" height="16" rx="3" class="c-mask"/>
-          <text data-boundary-label="" x="202" y="139" class="t-cloud" font-size="9" font-weight="600">本机回环 127.0.0.1（可信区）</text>
+        <g data-graph-role="structural-frame-label" data-composition-frame-id="0" data-composition-frame-kind="region" data-composition-frame-label="Browser Bridge（本机 · 127.0.0.1）">
+          <rect data-graph-role="structural-frame-label-mask" x="19" y="220" width="193.6" height="16" rx="3" class="c-mask"/>
+          <text data-boundary-label="" x="23" y="233" class="t-cloud" font-size="9" font-weight="600">Browser Bridge（本机 · 127.0.0.1）</text>
         </g>
 
-        <g data-graph-role="structural-frame-label" data-composition-frame-id="1" data-composition-frame-kind="security-group" data-composition-frame-label="Chrome 页面上下文">
-          <rect data-graph-role="structural-frame-label-mask" x="1100" y="410" width="101.8" height="16" rx="3" class="c-mask"/>
-          <text data-boundary-label="" x="1104" y="423" class="t-security" font-size="9" font-weight="600">Chrome 页面上下文</text>
-        </g>
-
-        <g data-graph-role="structural-frame-label" data-composition-frame-id="2" data-composition-frame-kind="region" data-composition-frame-label="公网 DeepSeek 服务端">
-          <rect data-graph-role="structural-frame-label-mask" x="1040" y="190" width="118" height="16" rx="3" class="c-mask"/>
-          <text data-boundary-label="" x="1044" y="203" class="t-cloud" font-size="9" font-weight="600">公网 DeepSeek 服务端</text>
+        <g data-graph-role="structural-frame-label" data-composition-frame-id="1" data-composition-frame-kind="security-group" data-composition-frame-label="Chrome 页面上下文 · 真实指纹出网">
+          <rect data-graph-role="structural-frame-label-mask" x="1057.403861367742" y="76" width="167.19227726451612" height="16" rx="3" class="c-mask"/>
+          <text data-boundary-label="" x="1061.403861367742" y="88.18709777419355" class="t-security" font-size="8.187097774193548" font-weight="600">Chrome 页面上下文 · 真实指纹出网</text>
         </g>
 
         <!-- Legend -->
-        <g data-legend="" data-legend-bridge="">
-          <text x="40" y="722" class="t-primary" font-size="12" font-weight="650">图例</text>
-          <g data-legend-semantic-kind="frontend" data-legend-kind="frontend" data-legend-label="前端" data-legend-x="40" data-legend-baseline="742" data-legend-width="63">
-            <rect x="40" y="733" width="16" height="10" rx="2.5" class="c-frontend" stroke-width="1"/>
-            <text x="62" y="742" class="t-muted" font-size="10" font-weight="500">前端</text>
-          </g>
-          <g data-legend-semantic-kind="backend" data-legend-kind="backend" data-legend-label="后端" data-legend-x="125" data-legend-baseline="742" data-legend-width="63">
-            <rect x="125" y="733" width="16" height="10" rx="2.5" class="c-backend" stroke-width="1"/>
-            <text x="147" y="742" class="t-muted" font-size="10" font-weight="500">后端</text>
-          </g>
-          <g data-legend-semantic-kind="database" data-legend-kind="database" data-legend-label="数据库" data-legend-x="210" data-legend-baseline="742" data-legend-width="73">
-            <rect x="210" y="733" width="16" height="10" rx="2.5" class="c-database" stroke-width="1"/>
-            <text x="232" y="742" class="t-muted" font-size="10" font-weight="500">数据库</text>
-          </g>
-          <g data-legend-semantic-kind="security" data-legend-kind="security" data-legend-label="安全" data-legend-x="305" data-legend-baseline="742" data-legend-width="63">
-            <rect x="305" y="733" width="16" height="10" rx="2.5" class="c-security" stroke-width="1"/>
-            <text x="327" y="742" class="t-muted" font-size="10" font-weight="500">安全</text>
-          </g>
-          <g data-legend-semantic-kind="external" data-legend-kind="external" data-legend-label="外部系统" data-legend-x="390" data-legend-baseline="742" data-legend-width="83">
-            <rect x="390" y="733" width="16" height="10" rx="2.5" class="c-external" stroke-width="1"/>
-            <text x="412" y="742" class="t-muted" font-size="10" font-weight="500">外部系统</text>
-          </g>
-        </g>
+
       </svg>
       <p class="intent-trace-status no-print" id="intent-trace-status" role="status" aria-live="polite" aria-atomic="true"></p>
       <div class="share-chapter-cue no-print" id="share-chapter-cue" hidden role="status" aria-live="polite">
@@ -5668,39 +5569,36 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
       <div class="card">
         <div class="card-header">
           <div class="card-dot cyan"></div>
-          <h3>请求链路</h3>
+          <h3>请求管线</h3>
         </div>
         <ul>
-          <li>&bull; OpenAI / Anthropic / Responses 三入口</li>
-          <li>&bull; 共用一条内部流水线 + 统一消息模型</li>
-          <li>&bull; 会话前缀哈希命中则只发增量消息</li>
-          <li>&bull; 响应按客户端协议分流回传</li>
-        </ul>
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <div class="card-dot emerald"></div>
-          <h3>保号节流</h3>
-        </div>
-        <ul>
-          <li>&bull; 账号级并发槽 + 速率闸门，可真并行</li>
-          <li>&bull; 间隔 8s + 抖动，90/时 · 500/天</li>
-          <li>&bull; 软限流：60s 无首 token 即失败</li>
-          <li>&bull; 429 冷却 5 分钟，反复失败标 dead</li>
+          <li>&bull; 三协议归一为统一消息模型，双模式会话分流</li>
+          <li>&bull; 全部出网请求由真实 Chrome 页面 fetch 发出</li>
+          <li>&bull; 准入闸门执行配额红线与冷却感知路由</li>
         </ul>
       </div>
 
       <div class="card">
         <div class="card-header">
           <div class="card-dot rose"></div>
-          <h3>真实性与状态</h3>
+          <h3>工具调用链</h3>
         </div>
         <ul>
-          <li>&bull; 请求由页面自身 fetch 发出，指纹全真</li>
-          <li>&bull; PoW 用官方 WASM 在本地求解</li>
-          <li>&bull; 无原生 FC：XML 标签回填 tool_calls</li>
-          <li>&bull; 会话 10 天回收、文件哈希缓存</li>
+          <li>&bull; XML 协议注入（提醒置于提示词末尾）</li>
+          <li>&bull; DSML 私有格式识别并转换为标准 tool_calls</li>
+          <li>&bull; 截断透传 · 尾逗号/路径/单引号 JSON 修复</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot emerald"></div>
+          <h3>韧性设计</h3>
+        </div>
+        <ul>
+          <li>&bull; 空流重试×2 递进（20s）→ 仍空报错不糊弄</li>
+          <li>&bull; 静音识别（mute_until）长冷却 · 封号自动摘除</li>
+          <li>&bull; 会话 6h 回收 · 断开优雅停止 · 映射自愈</li>
         </ul>
       </div>
     </div>
